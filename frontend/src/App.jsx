@@ -17,6 +17,7 @@ import DriverOverview from './components/DriverOverview';
 import FieldOfficerOverview from './components/FieldOfficerOverview';
 import LogisticsOverview from './components/LogisticsOverview';
 import { useWebPushNotifications } from './hooks/useWebPushNotifications';
+import { offlineReportQueue, offlineResponseQueue, isOnline } from './services/offlineQueue';
 
 const Icon = ({ n, s = 20 }) => {
   const icons = {
@@ -391,7 +392,7 @@ function Overview({ role, navigate, action, notify }) {
   if (role === 'logistics') {
     return <LogisticsOverview navigate={navigate} notify={notify} />;
   }
-  return <DistrictDashboard notify={notify} />;
+  return <DistrictDashboard notify={notify} navigate={navigate} />;
 }
 
 function Dashboard({ role, exit }) {
@@ -479,6 +480,7 @@ function Dashboard({ role, exit }) {
         </div>
       </header>
       <div className="content">
+        <NetworkStatusBar notify={notify} />
         {page !== 'Profile' && <>
           <section className="welcome">
             <div><small>{new Date().toLocaleDateString(undefined, { weekday: 'long', day: '2-digit', month: 'long' }).toUpperCase()} <i>•</i> {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
@@ -518,6 +520,126 @@ function RegionStrip({ navigate }) {
       </p>
       <button onClick={() => navigate('Live map')}>{t('dashboard.viewLiveMap') || 'View Live Map'} <Icon n="arrow" s={15}/></button>
     </section>
+  );
+}
+
+function NetworkStatusBar({ notify }) {
+  const [online, setOnline] = useState(isOnline());
+  const [pendingReports, setPendingReports] = useState(offlineReportQueue.count());
+  const [pendingResponses, setPendingResponses] = useState(offlineResponseQueue.count());
+  const [syncing, setSyncing] = useState(false);
+  const [syncNotice, setSyncNotice] = useState('');
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setOnline(true);
+      setPendingReports(offlineReportQueue.count());
+      setPendingResponses(offlineResponseQueue.count());
+    };
+    const handleOffline = () => {
+      setOnline(false);
+      setPendingReports(offlineReportQueue.count());
+      setPendingResponses(offlineResponseQueue.count());
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    const interval = setInterval(() => {
+      setPendingReports(offlineReportQueue.count());
+      setPendingResponses(offlineResponseQueue.count());
+    }, 4000);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      clearInterval(interval);
+    };
+  }, []);
+
+  const handleManualSync = async () => {
+    if (!online || syncing) return;
+    setSyncing(true);
+    try {
+      let syncedCount = 0;
+      if (offlineReportQueue.count() > 0) {
+        const res = await offlineReportQueue.flush(api);
+        syncedCount += res?.synced || 0;
+      }
+      if (offlineResponseQueue.count() > 0) {
+        const res = await offlineResponseQueue.flush(api);
+        syncedCount += res?.count || 0;
+      }
+      setPendingReports(offlineReportQueue.count());
+      setPendingResponses(offlineResponseQueue.count());
+      setSyncNotice(`Synced ${syncedCount} offline action(s) with canonical server.`);
+      setTimeout(() => setSyncNotice(''), 4000);
+      notify && notify('Offline items synchronized successfully.');
+    } catch (_) {
+      setSyncNotice('Sync encountered network issue. Retrying automatically.');
+      setTimeout(() => setSyncNotice(''), 4000);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const totalPending = pendingReports + pendingResponses;
+
+  if (online && totalPending === 0 && !syncNotice) {
+    return null;
+  }
+
+  return (
+    <div
+      style={{
+        margin: '0 0 16px 0',
+        padding: '10px 16px',
+        borderRadius: 8,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: 8,
+        fontSize: 12,
+        fontWeight: 600,
+        background: !online ? '#fffbeb' : totalPending > 0 ? '#eff6ff' : '#ecfdf5',
+        border: `1px solid ${!online ? '#fde68a' : totalPending > 0 ? '#bfdbfe' : '#a7f3d0'}`,
+        color: !online ? '#92400e' : totalPending > 0 ? '#1e40af' : '#065f46',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 14 }}>{!online ? '⚡' : syncing ? '🔄' : '✓'}</span>
+        <span>
+          {!online
+            ? `OFFLINE MODE — Network disconnected. New reports and alert responses are queued locally.`
+            : syncNotice
+            ? syncNotice
+            : `RECONNECTED — ${totalPending} action(s) waiting to sync.`}
+          {totalPending > 0 && (
+            <strong style={{ marginLeft: 6, opacity: 0.9 }}>
+              ({pendingReports} report{pendingReports === 1 ? '' : 's'}, {pendingResponses} response{pendingResponses === 1 ? '' : 's'})
+            </strong>
+          )}
+        </span>
+      </div>
+      {online && totalPending > 0 && (
+        <button
+          onClick={handleManualSync}
+          disabled={syncing}
+          style={{
+            padding: '4px 12px',
+            borderRadius: 6,
+            border: 'none',
+            background: '#1d4ed8',
+            color: '#fff',
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: syncing ? 'wait' : 'pointer',
+          }}
+        >
+          {syncing ? 'Syncing...' : 'Sync Pending Items ➔'}
+        </button>
+      )}
+    </div>
   );
 }
 

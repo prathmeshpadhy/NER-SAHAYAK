@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import LiveMap from './LiveMap';
+import IncidentDetailModal from './IncidentDetailModal';
+import AlertResponseModal from './AlertResponseModal';
 import { watchGpsPosition } from '../services/gpsHelper';
 import { useTranslation } from '../hooks/useTranslation';
 
@@ -15,6 +17,8 @@ export default function DriverOverview({ navigate, action, notify }) {
   const [stopFn, setStopFn] = useState(null);
   const [hazards, setHazards] = useState([]);
   const [loadingHazards, setLoadingHazards] = useState(true);
+  const [selectedHazard, setSelectedHazard] = useState(null);
+  const [selectedAlertForResponse, setSelectedAlertForResponse] = useState(null);
 
   useEffect(() => {
     // Load local weather for driver's district
@@ -133,38 +137,75 @@ export default function DriverOverview({ navigate, action, notify }) {
           </div>
         ) : (
           <div style={{ display: 'grid', gap: 8 }}>
-            {hazards.slice(0, 3).map((h) => (
-              <div key={h.id} style={{ padding: '10px 14px', background: h.severity === 'critical' ? '#fef2f2' : '#fffbeb', border: `1px solid ${h.severity === 'critical' ? '#fecaca' : '#fde68a'}`, borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <b style={{ fontSize: 12, color: '#1f2937' }}>[{h.category?.toUpperCase().replace('_', ' ')}] {h.title}</b>
-                    <span style={{
-                      fontSize: 9,
-                      fontWeight: 800,
-                      padding: '1px 6px',
-                      borderRadius: 4,
-                      textTransform: 'uppercase',
-                      color: h.severity === 'critical' ? '#b91c1c' : '#b45309',
-                      background: h.severity === 'critical' ? '#fee2e2' : '#fef3c7',
-                    }}>
-                      {h.severity}
-                    </span>
+            {hazards.slice(0, 3).map((h) => {
+              const hasGps = h.hasGps || (h.lat !== null && h.lat !== undefined && !isNaN(Number(h.lat)) && h.lng !== null && h.lng !== undefined && !isNaN(Number(h.lng)));
+              const hasPhoto = Boolean(h.photoDataUrl && typeof h.photoDataUrl === 'string' && h.photoDataUrl.trim().length > 0);
+
+              return (
+                <div key={h.id} style={{ padding: '10px 14px', background: h.severity === 'critical' ? '#fef2f2' : '#fffbeb', border: `1px solid ${h.severity === 'critical' ? '#fecaca' : '#fde68a'}`, borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div style={{ flex: '1 1 300px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <b style={{ fontSize: 12, color: '#1f2937' }}>[{h.category?.toUpperCase().replace('_', ' ')}] {h.title}</b>
+                      <span style={{
+                        fontSize: 9,
+                        fontWeight: 800,
+                        padding: '1px 6px',
+                        borderRadius: 4,
+                        textTransform: 'uppercase',
+                        color: h.severity === 'critical' ? '#b91c1c' : '#b45309',
+                        background: h.severity === 'critical' ? '#fee2e2' : '#fef3c7',
+                      }}>
+                        {h.severity}
+                      </span>
+                      {hasPhoto && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: '#e0f2fe', color: '#0369a1' }}>
+                          📷 Photo Attached
+                        </span>
+                      )}
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: hasGps ? '#dcfce7' : '#f1f5f9', color: hasGps ? '#15803d' : '#64748b' }}>
+                        {hasGps ? `🌐 Fix: ${Number(h.lat).toFixed(4)}, ${Number(h.lng).toFixed(4)}` : '🌐 GPS: Unavailable'}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: 11, color: '#4b5563', margin: '3px 0 0' }}>
+                      {h.description || 'Reported by PWD Field Officer. Proceed with extreme caution or request reroute.'}
+                    </p>
+                    <div style={{ fontSize: 10, color: '#6b7280', marginTop: 3 }}>
+                      Corridor: <b>{h.road || 'NH27 Corridor'}</b> · District: <b>{h.district || user.district || 'Assam'}</b> · Reported {new Date(h.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
                   </div>
-                  <p style={{ fontSize: 11, color: '#4b5563', margin: '3px 0 0' }}>
-                    {h.description || 'Reported by PWD Field Officer. Proceed with extreme caution or request reroute.'}
-                  </p>
-                  <div style={{ fontSize: 10, color: '#6b7280', marginTop: 3 }}>
-                    Corridor: <b>{h.road || 'NH27 Corridor'}</b> · District: <b>{h.district || user.district || 'Assam'}</b> · Reported {new Date(h.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <button
+                      onClick={() => setSelectedHazard(h)}
+                      style={{ border: '1px solid #0f766e', background: '#0f766e', color: '#fff', borderRadius: 6, padding: '5px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      Inspect Evidence
+                    </button>
+                    <button
+                      onClick={() => setSelectedAlertForResponse({
+                        id: h.id,
+                        title: h.title,
+                        text: h.description,
+                        road: h.road,
+                        severity: h.severity,
+                        incidentId: h.id,
+                        type: h.category,
+                        createdAt: h.createdAt || h.created_at,
+                        responseStatus: h.status === 'resolved' ? 'resolved' : 'new',
+                      })}
+                      style={{ border: '1px solid #1e745b', background: '#1e745b', color: '#fff', borderRadius: 6, padding: '5px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      Acknowledge ➔
+                    </button>
+                    <button
+                      onClick={() => navigate('Live map')}
+                      style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 6, padding: '5px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer', color: '#374151' }}
+                    >
+                      View on Map ➔
+                    </button>
                   </div>
                 </div>
-                <button
-                  onClick={() => navigate('Live map')}
-                  style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: 6, padding: '5px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer', color: '#374151' }}
-                >
-                  View on Map ➔
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>
@@ -235,6 +276,25 @@ export default function DriverOverview({ navigate, action, notify }) {
           </div>
         </section>
       </div>
+
+      {/* Incident Evidence Modal */}
+      <IncidentDetailModal
+        incident={selectedHazard}
+        onClose={() => setSelectedHazard(null)}
+        onLocateOnMap={() => navigate('Live map')}
+      />
+
+      {/* Driver Alert Response Modal */}
+      {selectedAlertForResponse && (
+        <AlertResponseModal
+          alert={selectedAlertForResponse}
+          onClose={() => setSelectedAlertForResponse(null)}
+          onResponseSuccess={() => {
+            setSelectedAlertForResponse(null);
+          }}
+          notify={notify}
+        />
+      )}
     </div>
   );
 }

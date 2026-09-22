@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Polyline, Tooltip, CircleMarker, Marker, Layer
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import api from '../services/api';
+import IncidentDetailModal from './IncidentDetailModal';
 import { NODES as LOCAL_NODES, EDGES as LOCAL_EDGES } from '../services/routeCalculator';
 import { DRIVER_ROSTER } from '../services/driverService';
 import { useTranslation } from '../hooks/useTranslation';
@@ -93,6 +94,43 @@ function MapCenterer() {
   return null;
 }
 
+const NER_REGIONAL_BOUNDS = [
+  [21.5, 89.5], // Southwest corner (covers lower Assam/Meghalaya/Tripura)
+  [29.5, 97.5], // Northeast corner (covers upper Arunachal Pradesh/Nagaland/Manipur)
+];
+
+function RouteFitter({ focusRouteEdges, activeRoute }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map) return;
+
+    try {
+      const points = [];
+      const edgesToScan = focusRouteEdges || activeRoute?.edges || [];
+      if (Array.isArray(edgesToScan) && edgesToScan.length > 0) {
+        for (const e of edgesToScan) {
+          if (e.from && typeof e.from.lat === 'number' && typeof e.from.lng === 'number') {
+            points.push([e.from.lat, e.from.lng]);
+          }
+          if (e.to && typeof e.to.lat === 'number' && typeof e.to.lng === 'number') {
+            points.push([e.to.lat, e.to.lng]);
+          }
+        }
+      }
+
+      if (points.length >= 2) {
+        const bounds = L.latLngBounds(points);
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 11 });
+      } else {
+        map.fitBounds(NER_REGIONAL_BOUNDS, { padding: [20, 20] });
+      }
+    } catch (_) {}
+  }, [map, focusRouteEdges, activeRoute]);
+
+  return null;
+}
+
 export default function LiveMap({ height = null, focusRouteEdges = null, activeRoute = null }) {
   const { t } = useTranslation();
   const [nodes, setNodes] = useState(LOCAL_NODES);
@@ -100,6 +138,7 @@ export default function LiveMap({ height = null, focusRouteEdges = null, activeR
   const [incidents, setIncidents] = useState([]);
   const [isOfflineMode, setIsOfflineMode] = useState(!navigator.onLine);
   const [modeFilter, setModeFilter] = useState('all'); // all | road | railway | waterway | air
+  const [selectedIncident, setSelectedIncident] = useState(null);
 
   const load = async () => {
     try {
@@ -138,19 +177,30 @@ export default function LiveMap({ height = null, focusRouteEdges = null, activeR
   // Positioned incidents
   const mappedIncidents = useMemo(() => {
     return incidents.map((inc) => {
-      let lat = inc.lat;
-      let lng = inc.lng;
-      if (lat === null || lat === undefined || isNaN(Number(lat))) {
+      const hasRealGps = inc.hasGps || (
+        inc.lat !== null && inc.lat !== undefined && inc.lat !== '' && !isNaN(Number(inc.lat)) &&
+        inc.lng !== null && inc.lng !== undefined && inc.lng !== '' && !isNaN(Number(inc.lng))
+      );
+      let mapLat = hasRealGps ? Number(inc.lat) : null;
+      let mapLng = hasRealGps ? Number(inc.lng) : null;
+      if (!hasRealGps) {
         const node = nodeMap[inc.nodeId] || nodeMap[inc.fromNode];
         if (node) {
-          lat = node.lat + (Math.random() - 0.5) * 0.08;
-          lng = node.lng + (Math.random() - 0.5) * 0.08;
+          mapLat = node.lat + (Math.random() - 0.5) * 0.08;
+          mapLng = node.lng + (Math.random() - 0.5) * 0.08;
         } else {
-          lat = 26.18;
-          lng = 91.75; // Default Guwahati corridor
+          mapLat = 26.18;
+          mapLng = 91.75; // Default Guwahati corridor
         }
       }
-      return { ...inc, lat: Number(lat), lng: Number(lng) };
+      return {
+        ...inc,
+        hasGps: hasRealGps,
+        lat: hasRealGps ? Number(inc.lat) : null,
+        lng: hasRealGps ? Number(inc.lng) : null,
+        mapLat: Number(mapLat),
+        mapLng: Number(mapLng),
+      };
     });
   }, [incidents, nodeMap]);
 
@@ -213,6 +263,7 @@ export default function LiveMap({ height = null, focusRouteEdges = null, activeR
         <MapContainer center={center} zoom={6} style={{ width: '100%', height: '100%' }} scrollWheelZoom>
           <MapResizer />
           <MapCenterer />
+          <RouteFitter focusRouteEdges={focusRouteEdges} activeRoute={activeRoute} />
           <LayersControl position="topright">
             <LayersControl.BaseLayer checked name="OpenStreetMap">
               <TileLayer
@@ -271,20 +322,23 @@ export default function LiveMap({ height = null, focusRouteEdges = null, activeR
                   return (
                     <Marker
                       key={inc.id}
-                      position={[inc.lat, inc.lng]}
+                      position={[inc.mapLat, inc.mapLng]}
+                      eventHandlers={{
+                        click: () => setSelectedIncident(inc),
+                      }}
                       icon={new L.DivIcon({
-                        html: `<div style="font-size:14px; background:${isResolved ? '#ecfdf5' : '#fff5f5'}; border-radius:50%; width:26px; height:26px; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.35); border: 2.5px solid ${iconColor}; animation: ${isCritical && !isResolved ? 'pulse 1.8s infinite' : 'none'};">${iconEmoji}</div>`,
+                        html: `<div style="font-size:14px; background:${isResolved ? '#ecfdf5' : '#fff5f5'}; border-radius:50%; width:26px; height:26px; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.35); border: 2.5px solid ${iconColor}; cursor: pointer; animation: ${isCritical && !isResolved ? 'pulse 1.8s infinite' : 'none'};">${iconEmoji}</div>`,
                         className: 'custom-incident-icon',
                         iconSize: [26, 26],
                         iconAnchor: [13, 13],
                       })}
                     >
                       <Tooltip sticky>
-                        <div style={{ maxWidth: 220, fontSize: 11 }}>
+                        <div style={{ maxWidth: 230, fontSize: 11 }}>
                           <div style={{ fontWeight: 800, color: iconColor, fontSize: 12, marginBottom: 2 }}>
                             {inc.title}
                           </div>
-                          <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+                          <div style={{ display: 'flex', gap: 4, marginBottom: 4, flexWrap: 'wrap' }}>
                             <span style={{ fontWeight: 800, textTransform: 'uppercase', fontSize: 8, padding: '1px 5px', borderRadius: 3, background: isCritical ? '#fee2e2' : '#fef3c7', color: isCritical ? '#991b1b' : '#92400e' }}>
                               {inc.severity}
                             </span>
@@ -294,11 +348,24 @@ export default function LiveMap({ height = null, focusRouteEdges = null, activeR
                             <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: '#f3f4f6', color: '#374151', fontWeight: 700 }}>
                               {inc.status ? inc.status.toUpperCase() : 'ACTIVE'}
                             </span>
+                            {inc.photoDataUrl && (
+                              <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: '#e0f2fe', color: '#0369a1', fontWeight: 700 }}>
+                                📷 Photo
+                              </span>
+                            )}
                           </div>
                           <div><b>Road/Corridor:</b> {inc.road || 'State Highway'}</div>
+                          <div style={{ fontSize: 10, color: inc.hasGps ? '#0f766e' : '#64748b', margin: '2px 0' }}>
+                            <b>GPS:</b> {inc.hasGps ? `${inc.lat.toFixed(4)}°, ${inc.lng.toFixed(4)}°` : 'Unavailable (Corridor estimate)'}
+                          </div>
                           {inc.description && <div style={{ color: '#4b5563', margin: '3px 0' }}>{inc.description}</div>}
-                          <div style={{ fontSize: 9, color: '#6b7280', marginTop: 3 }}>
-                            <b>Reported:</b> {new Date(inc.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          {inc.photoDataUrl && (
+                            <div style={{ marginTop: 4, marginBottom: 4, maxHeight: 70, overflow: 'hidden', borderRadius: 4, background: '#000' }}>
+                              <img src={inc.photoDataUrl} alt="Preview" style={{ width: '100%', height: 'auto', maxHeight: 70, objectFit: 'cover' }} />
+                            </div>
+                          )}
+                          <div style={{ fontSize: 9, color: '#0f766e', fontWeight: 700, marginTop: 4 }}>
+                            👆 Click marker to inspect full evidence ➔
                           </div>
                         </div>
                       </Tooltip>
@@ -422,7 +489,17 @@ export default function LiveMap({ height = null, focusRouteEdges = null, activeR
 
             {/* Active Hazard Markers on Canvas */}
             {mappedIncidents.filter(i => i.status !== 'resolved').slice(0, 10).map((inc) => (
-              <circle key={inc.id} cx={inc.lng} cy={inc.lat} r={0.09} fill="#ef4444" stroke="#ffffff" strokeWidth={0.02}>
+              <circle
+                key={inc.id}
+                cx={inc.mapLng}
+                cy={inc.mapLat}
+                r={0.09}
+                fill="#ef4444"
+                stroke="#ffffff"
+                strokeWidth={0.02}
+                style={{ cursor: 'pointer' }}
+                onClick={() => setSelectedIncident(inc)}
+              >
                 <animate attributeName="r" values="0.08;0.14;0.08" dur="1.8s" repeatCount="indefinite" />
               </circle>
             ))}
@@ -466,6 +543,12 @@ export default function LiveMap({ height = null, focusRouteEdges = null, activeR
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><i style={{ width: 8, height: 8, background: '#ef4444', borderRadius: '50%' }} />⚠️ Hazards ({incidents.length})</span>
         <span style={{ marginLeft: 'auto', color: '#7c8f87' }}>{t('map.activeDrivers') || '10 Active Drivers Tracked'}</span>
       </div>
+
+      {/* Incident Evidence Modal */}
+      <IncidentDetailModal
+        incident={selectedIncident}
+        onClose={() => setSelectedIncident(null)}
+      />
     </div>
   );
 }

@@ -46,6 +46,8 @@ function mockFallback(path) {
   if (path.startsWith('/network/nodes')) return { nodes: [] };
   if (path.startsWith('/network/edges')) return { edges: [] };
   if (path.startsWith('/weather')) return { weather: [] };
+  if (path.startsWith('/alerts') && path.includes('/responses')) return { responses: [], count: 0 };
+  if (path.startsWith('/alerts') && path !== '/alerts') return { alert: null, history: [], allowedActions: [] };
   if (path.startsWith('/alerts')) return { alerts: [] };
   if (path.startsWith('/reports')) return { reports: [] };
   if (path.startsWith('/vehicles')) return { vehicles: [] };
@@ -109,13 +111,19 @@ export const api = {
   weatherAll: () => request('/weather/all'),
   weatherFor: (nodeId) => request(`/weather/${nodeId}`),
 
-  // Alerts
+  // Alerts & Phase 6 Response Lifecycle
   alerts: () => request('/alerts'),
+  alert: (id) => request(`/alerts/${id}`),
+  alertResponses: (id) => request(`/alerts/${id}/responses`),
   createAlert: (payload) => request('/alerts', { method: 'POST', body: payload }),
+  respondToAlert: (id, payload) => request(`/alerts/${id}/respond`, { method: 'POST', body: payload }),
+  updateAlertStatus: (id, status, note) => request(`/alerts/${id}/status`, { method: 'PATCH', body: { status, note } }),
+  syncAlertResponses: (responses) => request('/alerts/sync-responses', { method: 'POST', body: { responses } }),
   deleteAlert: (id) => request(`/alerts/${id}`, { method: 'DELETE' }),
 
   // Field reports
   reports: () => request('/reports'),
+  report: (id) => request(`/reports/${id}`),
   myReports: () => request('/reports/mine'),
   createReport: (payload) => request('/reports', { method: 'POST', body: payload }),
   syncReports: (reports) => request('/reports/sync', { method: 'POST', body: { reports } }),
@@ -128,12 +136,17 @@ export const api = {
 
   // Shipments
   shipments: () => request('/shipments'),
+  shipment: (id) => request(`/shipments/${id}`),
+  shipmentAlternative: (id) => request(`/shipments/${id}/alternative`),
   createShipment: (payload) => request('/shipments', { method: 'POST', body: payload }),
   updateShipmentStatus: (id, status) => request(`/shipments/${id}/status`, { method: 'PATCH', body: { status } }),
   assignDriver: (id, driverId) => request(`/shipments/${id}/assign`, { method: 'PATCH', body: { driverId } }),
 
-  // Dashboard
+  // Dashboard & Regional Intelligence
   dashboardSummary: () => request('/dashboard/summary'),
+  regionalBriefing: () => request('/dashboard/regional'),
+  corridors: () => request('/dashboard/corridors'),
+  emergencyRoute: (origin, destination) => request(`/dashboard/emergency-route?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`),
   activityLogs: () => request('/dashboard/activity'),
 
   // Users directory (official role only)

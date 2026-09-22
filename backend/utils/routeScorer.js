@@ -96,16 +96,12 @@ function scoreAndRecommendRoutes(routes = {}, options = {}) {
       if (mode === 'air') suitabilityAdjustment -= 0.10; // Secured fast transport
     }
 
-    // Composite cost (lower is better)
+    // Composite cost (lower is better) - unconstrained for ranking
     const cost = (wTime * normTime) + (wDist * normDist) + (wRisk * normRisk) + suitabilityAdjustment;
-
-    // 0-100 Recommendation Score (higher is better)
-    const score = Math.round(Math.max(10, Math.min(99, (1 - cost) * 100)));
 
     return {
       mode,
       cost,
-      score,
       metrics: {
         timeMinutes: time,
         distanceKm: distance,
@@ -116,42 +112,201 @@ function scoreAndRecommendRoutes(routes = {}, options = {}) {
     };
   });
 
-  // Sort candidates by cost ascending (lowest cost = best recommendation)
+  // Sort candidates strictly by composite cost ascending (lowest cost = Rank #1)
   scoredCandidates.sort((a, b) => a.cost - b.cost);
 
   const best = scoredCandidates[0];
   const bestMode = best.mode;
   const bestRoute = routes[bestMode];
 
-  // Synthesize deterministic, human-readable rationale
-  let reason = '';
-  if (isEmergency) {
-    reason = `Emergency priority selected ${bestMode.toUpperCase()} (${bestRoute.totalKm} km, ${Math.floor(bestRoute.etaMinutes / 60)}h ${bestRoute.etaMinutes % 60}m) to minimize transit delay with ${bestRoute.safetyIndex}% corridor safety.`;
-  } else if (isHeavy && (bestMode === 'railway' || bestMode === 'waterway')) {
-    reason = `Heavy freight profile prioritized ${bestMode === 'railway' ? 'NFR Rail' : 'IWAI Waterway'} for high-capacity bulk payload, lower logistics cost, and ${bestRoute.safetyIndex}% corridor integrity.`;
-  } else if (bestMode === 'air') {
-    reason = `Air + Road multimodal corridor delivers optimal efficiency (${Math.floor(bestRoute.etaMinutes / 60)}h ${bestRoute.etaMinutes % 60}m vs road transit) with high safety index of ${bestRoute.safetyIndex}%.`;
-  } else if (bestMode === 'railway') {
-    reason = `NFR Railway freight corridor selected for superior balance of transport safety (${bestRoute.safetyIndex}%), low disruption vulnerability, and reliable transit schedule.`;
-  } else if (bestMode === 'waterway') {
-    reason = `Inland Waterway corridor (NW-2/16) selected for stable river freight movement with ${bestRoute.safetyIndex}% route safety index.`;
-  } else {
-    reason = `Direct highway corridor selected as the most viable and direct routing (${bestRoute.totalKm} km) with ${bestRoute.safetyIndex}% corridor safety.`;
-  }
+  // Presentation-only Decision Score derived from normalized relative cost
+  // Preserves strict ordering while Rank serves as the primary decision signal.
+  const bestCost = best.cost;
+  const worstCost = scoredCandidates[scoredCandidates.length - 1].cost;
+  const costRange = worstCost - bestCost;
 
-  // Attach score directly to candidate route objects
-  scoredCandidates.forEach((c) => {
+  let lastAssignedScore = 99;
+  scoredCandidates.forEach((c, idx) => {
+    let decScore;
+    if (costRange <= 0.0001) {
+      decScore = Math.max(15, 98 - (idx * 5));
+    } else {
+      // Relative composite cost in [0, 1]
+      const relativeCost = (c.cost - bestCost) / costRange;
+      // Scales inversely with relative cost: higher relative cost results in a lower decision score
+      const dynamicSpread = Math.min(55, Math.max(20, Math.round(costRange * 60)));
+      decScore = Math.round(98 - (relativeCost * dynamicSpread));
+    }
+
+    // Preserve strict ordering across ranked candidates
+    if (idx > 0 && decScore >= lastAssignedScore) {
+      decScore = Math.max(10, lastAssignedScore - 1);
+    }
+    lastAssignedScore = decScore;
+
+    c.rank = idx + 1;
+    c.isRecommended = (idx === 0);
+    c.decisionScore = decScore;
+    c.score = decScore;
+    c.costDelta = Number((c.cost - bestCost).toFixed(3));
+    c.metricDeltas = {
+      timeDiffMinutes: (c.metrics.timeMinutes || 0) - (best.metrics.timeMinutes || 0),
+      distanceDiffKm: (c.metrics.distanceKm || 0) - (best.metrics.distanceKm || 0),
+      safetyDiff: (c.metrics.safetyIndex || 0) - (best.metrics.safetyIndex || 0),
+    };
+
+    // Attach to candidate route objects for frontend & API consumers
     if (routes[c.mode]) {
-      routes[c.mode].score = c.score;
+      routes[c.mode].rank = c.rank;
+      routes[c.mode].isRecommended = c.isRecommended;
+      routes[c.mode].decisionScore = decScore;
+      routes[c.mode].score = decScore;
+      routes[c.mode].costDelta = c.costDelta;
+      routes[c.mode].metricDeltas = c.metricDeltas;
     }
   });
+
+  // Dynamic operational explanation generation
+  function formatHoursMins(mins) {
+    const h = Math.floor(mins / 60);
+    const m = Math.round(mins % 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  const modeLabels = {
+    road: 'ROAD',
+    railway: 'RAIL + ROAD',
+    waterway: 'WATERWAY + ROAD',
+    air: 'AIR + ROAD'
+  };
+
+  const bestModeTitle = modeLabels[bestMode] || bestMode.toUpperCase();
+  const runnerUp = scoredCandidates.length > 1 ? scoredCandidates[1] : null;
+  const roadCandidate = scoredCandidates.find((c) => c.mode === 'road');
+
+  // Lead clause with recommended mode, rank, safety, and transit duration
+  let reason = `${bestModeTitle} recommended — Rank #1. ${bestRoute.safetyIndex}% corridor safety and ${formatHoursMins(bestRoute.etaMinutes)} transit (${bestRoute.totalKm} km).`;
+
+  // Comparative clause contrasting with road corridor or alternative
+  if (bestMode !== 'road' && roadCandidate && roadCandidate.route) {
+    const roadRoute = roadCandidate.route;
+    const disruptedEdge = (roadRoute.edges || []).find((e) => e.condition === 'disrupted' || e.condition === 'blocked');
+    const roadName = disruptedEdge?.road || roadRoute.edges?.[0]?.road || 'highway';
+
+    if (disruptedEdge || roadRoute.safetyIndex < 75) {
+      let cause = 'active disruption';
+      const isIncident = (disruptedEdge?.disruptionMultiplier && disruptedEdge.disruptionMultiplier >= 4) || disruptedEdge?.condition === 'blocked';
+      const isWeather = Boolean(disruptedEdge?.weatherSeverity && disruptedEdge.weatherSeverity > 0.4);
+      if (disruptedEdge?.condition === 'blocked') {
+        cause = 'active road blockage';
+      } else if (isIncident && isWeather) {
+        cause = 'active hazard and adverse weather/rainfall';
+      } else if (isWeather) {
+        cause = 'severe weather and rainfall risk';
+      } else if (isIncident) {
+        cause = 'active field hazard disruption';
+      }
+      reason += ` The ${roadName} road alternative has ${roadRoute.safetyIndex}% safety because of ${cause} and takes ${formatHoursMins(roadRoute.etaMinutes)}.`;
+    } else {
+      reason += ` The road alternative offers ${roadRoute.safetyIndex}% safety and takes ${formatHoursMins(roadRoute.etaMinutes)}.`;
+    }
+
+    if (runnerUp && runnerUp.mode !== 'road' && runnerUp.mode !== bestMode && runnerUp.route) {
+      const runnerTitle = modeLabels[runnerUp.mode] || runnerUp.mode.toUpperCase();
+      reason += ` Selected over ${runnerTitle} (Rank #2 · ${formatHoursMins(runnerUp.route.etaMinutes)} transit) for optimal transit speed.`;
+    }
+  } else if (bestMode === 'road' && runnerUp && runnerUp.route) {
+    const runnerTitle = modeLabels[runnerUp.mode] || runnerUp.mode.toUpperCase();
+    const timeDelta = runnerUp.route.etaMinutes - bestRoute.etaMinutes;
+    if (timeDelta > 0) {
+      reason += ` Direct highway connectivity outperforms ${runnerTitle} by ${formatHoursMins(timeDelta)} without multimodal transfer delays.`;
+    } else {
+      reason += ` Direct highway routing provides optimal logistics feasibility over ${runnerTitle}.`;
+    }
+  }
+
+  // Priority and cargo context clause
+  if (isEmergency) {
+    reason += ' Emergency priority favors faster, safer transport.';
+  } else if (isHeavy && (bestMode === 'railway' || bestMode === 'waterway')) {
+    reason += ` Bulk freight profile prioritizes ${bestMode === 'railway' ? 'NFR rail capacity' : 'IWAI waterway barge'} for high-payload cargo and corridor integrity.`;
+  } else if (isPerishableOrUrgent) {
+    reason += ' Perishable cargo profile prioritizes reduced transit exposure and rapid delivery.';
+  } else if (isHighValue) {
+    reason += ' High-value freight profile prioritizes corridor security and minimal transfer risk.';
+  }
+
+  // Structured explanation generation (Task 11)
+  const affectedCorridors = [];
+  const avoidedDisruptions = [];
+  scoredCandidates.forEach((c) => {
+    if (c.route && c.route.edges) {
+      c.route.edges.forEach((e) => {
+        if (e.condition === 'disrupted' || e.condition === 'blocked' || (e.accessibilityState && e.accessibilityState !== 'OPEN')) {
+          const fromName = e.from?.name || e.from?.id || e.from || 'Origin';
+          const toName = e.to?.name || e.to?.id || e.to || 'Destination';
+          const entry = `${e.road || 'Corridor'} (${fromName} → ${toName}): ${e.accessibilityState || e.condition}`;
+          if (!affectedCorridors.includes(entry)) affectedCorridors.push(entry);
+        }
+      });
+    }
+  });
+
+  if (bestRoute && bestRoute.edges && roadCandidate && roadCandidate.route && roadCandidate.route.edges) {
+    roadCandidate.route.edges.forEach((e) => {
+      if (e.condition === 'disrupted' || e.condition === 'blocked' || (e.accessibilityState && e.accessibilityState !== 'OPEN')) {
+        const isUsedByBest = bestRoute.edges.some(be => be.road === e.road && (be.from?.id || be.from) === (e.from?.id || e.from));
+        if (!isUsedByBest) {
+          avoidedDisruptions.push(`Bypassed ${e.road || 'corridor'} hazard (${e.accessibilityState || e.condition}) on road network`);
+        }
+      }
+    });
+  }
+
+  let primaryRisk = 'None';
+  if (bestRoute.safetyIndex < 70) {
+    primaryRisk = 'Reduced corridor safety / terrain hazard';
+  } else if (bestRoute.accessibilityState === 'SEVERELY_DISRUPTED') {
+    primaryRisk = 'Severe weather / terrain disruption along corridor';
+  } else if (bestRoute.accessibilityState === 'CAUTION') {
+    primaryRisk = 'Minor speed reduction / regional weather';
+  } else {
+    primaryRisk = 'Low risk / clear corridor';
+  }
+
+  const structuredExplanation = {
+    recommendation: bestModeTitle,
+    recommendedMode: bestMode,
+    rank: 1,
+    decisionScore: best.decisionScore,
+    primaryRisk,
+    affectedCorridors,
+    avoidedDisruptions,
+    estimatedDelay: `${bestRoute.estimatedDelayMinutes || 0} mins`,
+    estimatedDelayMinutes: bestRoute.estimatedDelayMinutes || 0,
+    baseDurationMinutes: bestRoute.baseDurationMinutes || bestRoute.etaMinutes,
+    disruptionAdjustedMinutes: bestRoute.etaMinutes,
+    comparison: scoredCandidates.map(c => ({
+      mode: c.mode,
+      rank: c.rank,
+      decisionScore: c.decisionScore,
+      etaMinutes: c.metrics.timeMinutes,
+      safetyIndex: c.metrics.safetyIndex,
+      costDelta: c.costDelta,
+      isRecommended: c.isRecommended,
+    })),
+    reasons: [reason]
+  };
 
   return {
     recommendedMode: bestMode,
     recommendationReason: reason,
+    decisionScore: best.decisionScore,
     score: best.score,
+    rank: 1,
     route: bestRoute,
     rankings: scoredCandidates,
+    explanation: structuredExplanation,
   };
 }
 

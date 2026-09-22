@@ -28,24 +28,58 @@ router.get('/edges', requireAuth, async (req, res) => {
 
     const edges = EDGES.map((e) => {
       const relevant = disruptions.filter((d) => {
-        if (d.fromNode && d.toNode) {
-          return (d.fromNode === e.from && d.toNode === e.to) || 
-                 (d.fromNode === e.to && d.toNode === e.from);
+        // If road is specified, match road name
+        if (d.road && e.road && d.road.toLowerCase().trim() === e.road.toLowerCase().trim()) {
+          return true;
         }
-        if (d.fromNode) return d.fromNode === e.from || d.fromNode === e.to;
-        if (d.road) return d.road === e.road;
+        if (d.fromNode && d.toNode) {
+          const matchEndpoints = (d.fromNode === e.from && d.toNode === e.to) ||
+                                 (d.fromNode === e.to && d.toNode === e.from);
+          if (matchEndpoints) {
+            if (d.road && e.road && d.road.toUpperCase() !== e.road.toUpperCase() && e.mode !== 'road') {
+              return false;
+            }
+            return true;
+          }
+        }
+        const singleNode = d.fromNode || d.nodeId;
+        if (singleNode && !d.toNode) {
+          if (e.from === singleNode || e.to === singleNode) {
+            if (d.road && e.road && d.road.toUpperCase() !== e.road.toUpperCase() && e.mode !== 'road') {
+              return false;
+            }
+            return true;
+          }
+        }
         return false;
       });
+
       const blocked = relevant.some((d) => d.severity === 'blocked');
       const worstSeverity = relevant.reduce((max, d) => {
         const rank = { minor: 1, moderate: 2, severe: 3, blocked: 4 };
         return Math.max(max, rank[d.severity] || 0);
       }, 0);
       const weatherSeverity = Math.max(weatherByNode[e.from] || 0, weatherByNode[e.to] || 0);
+
+      let accessibilityState = 'OPEN';
       let condition = 'clear';
-      if (blocked) condition = 'blocked';
-      else if (worstSeverity >= 2 || weatherSeverity > 0.6) condition = 'disrupted';
-      else if (worstSeverity >= 1 || weatherSeverity > 0.3) condition = 'caution';
+
+      if (blocked) {
+        accessibilityState = 'BLOCKED';
+        condition = 'blocked';
+      } else if (worstSeverity >= 3 || weatherSeverity > 0.6) {
+        accessibilityState = 'SEVERELY_DISRUPTED';
+        condition = 'disrupted';
+      } else if (worstSeverity === 2) {
+        accessibilityState = 'RESTRICTED';
+        condition = 'disrupted';
+      } else if (worstSeverity === 1 || weatherSeverity > 0.3) {
+        accessibilityState = 'CAUTION';
+        condition = 'caution';
+      } else {
+        accessibilityState = 'OPEN';
+        condition = 'clear';
+      }
 
       return {
         from: nodeMap[e.from],
@@ -53,6 +87,7 @@ router.get('/edges', requireAuth, async (req, res) => {
         km: e.km,
         road: e.road,
         condition,
+        accessibilityState,
         mode: e.mode,
         weatherSeverity: Number(weatherSeverity.toFixed(2)),
       };
@@ -155,10 +190,17 @@ const handleCompare = async (req, res) => {
         return {
           mode: modeKey,
           available: false,
+          rank: null,
+          isRecommended: false,
           totalDistance: null,
           totalTime: null,
+          baseDurationMinutes: null,
+          estimatedDelayMinutes: null,
           safetyIndex: null,
           score: null,
+          decisionScore: null,
+          costDelta: null,
+          metricDeltas: null,
           segments: [],
           transfers: []
         };
@@ -167,10 +209,17 @@ const handleCompare = async (req, res) => {
         mode: modeKey,
         modeLabel: r.modeLabel,
         available: true,
+        rank: r.rank,
+        isRecommended: r.isRecommended,
         totalDistance: r.totalKm,
         totalTime: r.etaMinutes,
+        baseDurationMinutes: r.baseDurationMinutes || r.etaMinutes,
+        estimatedDelayMinutes: r.estimatedDelayMinutes || 0,
         safetyIndex: r.safetyIndex,
         score: r.score,
+        decisionScore: r.decisionScore || r.score,
+        costDelta: r.costDelta,
+        metricDeltas: r.metricDeltas,
         segments: r.segments || r.edges,
         transfers: r.transfers || []
       };
@@ -183,7 +232,11 @@ const handleCompare = async (req, res) => {
         mode: recommendationResult.recommendedMode,
         reason: recommendationResult.recommendationReason,
         score: recommendationResult.score,
-        route: recommendationResult.route
+        decisionScore: recommendationResult.decisionScore || recommendationResult.score,
+        rank: 1,
+        route: recommendationResult.route,
+        rankings: recommendationResult.rankings,
+        explanation: recommendationResult.explanation
       },
       computedAt: new Date().toISOString()
     });

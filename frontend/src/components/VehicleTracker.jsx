@@ -239,14 +239,36 @@ export default function VehicleTracker({ notify }) {
               <b>Corridor:</b> {t(`enum.${v.originNode}`) || nodeName(v.originNode)} → {t(`enum.${v.destinationNode}`) || nodeName(v.destinationNode)}
             </div>
 
-            <div style={{ fontSize: 10, color: '#7f948b', marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #f0f4f1', paddingTop: 6 }}>
-              <span>
-                {v.lat ? `📍 ${Number(v.lat).toFixed(4)}, ${Number(v.lng).toFixed(4)}` : '📡 No GPS fix'}
-              </span>
+            <div style={{ fontSize: 10, color: '#7f948b', marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #f0f4f1', paddingTop: 6, flexWrap: 'wrap', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={locationSourceStyle(v.locationSource)}>
+                  {locationSourceLabel(v.locationSource)}
+                </span>
+                <span>
+                  {v.lat !== null && v.lat !== undefined && !isNaN(Number(v.lat)) ? `📍 ${Number(v.lat).toFixed(4)}, ${Number(v.lng).toFixed(4)}` : '📡 No GPS fix'}
+                </span>
+              </div>
               <span>
                 Updated: {v.lastUpdated ? new Date(v.lastUpdated).toLocaleTimeString() : 'Just now'}
               </span>
             </div>
+
+            {/* Assigned Shipment Overview */}
+            {v.assignedShipment && (
+              <div style={{ marginTop: 8, padding: '6px 8px', background: v.assignedShipment.isDisrupted ? '#fff5f5' : '#f0fdf4', border: `1px solid ${v.assignedShipment.isDisrupted ? '#fecaca' : '#bbf7d0'}`, borderRadius: 6, fontSize: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                  <span style={{ fontWeight: 700, color: v.assignedShipment.isDisrupted ? '#991b1b' : '#166534' }}>
+                    📦 Active Shipment #{v.assignedShipment.id.slice(0, 8)}
+                  </span>
+                  <span style={{ fontSize: 9, fontWeight: 800, color: v.assignedShipment.isDisrupted ? '#b91c1c' : '#15803d' }}>
+                    {v.assignedShipment.isDisrupted ? `⚠️ Disrupted (+${v.assignedShipment.estimatedDelayMinutes || 0}m)` : `✅ ${v.assignedShipment.status.toUpperCase()}`}
+                  </span>
+                </div>
+                <div style={{ fontSize: 9, color: '#4b5563', marginTop: 2 }}>
+                  Route: {(v.assignedShipment.originNode || '').toUpperCase()} → {(v.assignedShipment.destinationNode || '').toUpperCase()} · {v.assignedShipment.cargoType}
+                </div>
+              </div>
+            )}
 
             <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
               <button onClick={() => toggleTracking(v)} style={tracking[v.id] ? stopBtn : startBtn}>
@@ -273,6 +295,30 @@ const kpiBox = (color, bg) => ({
 });
 const kpiLabel = { fontSize: 9, fontWeight: 800, color: '#5f776d', letterSpacing: 0.5 };
 const kpiVal = { fontSize: 18, fontWeight: 800, color: '#17483a' };
+
+function locationSourceStyle(source) {
+  const isLive = source === 'LIVE_GPS';
+  const isDemo = source === 'STATIC_DEMO';
+  return {
+    fontSize: 8,
+    fontWeight: 800,
+    padding: '1px 5px',
+    borderRadius: 3,
+    background: isLive ? '#dcfce7' : isDemo ? '#fef3c7' : '#f1f5f9',
+    color: isLive ? '#15803d' : isDemo ? '#92400e' : '#475569',
+    border: `1px solid ${isLive ? '#86efac' : isDemo ? '#fde68a' : '#cbd5e1'}`,
+  };
+}
+
+function locationSourceLabel(source) {
+  switch (source) {
+    case 'LIVE_GPS': return '🟢 LIVE GPS';
+    case 'LAST_KNOWN': return '🟡 LAST KNOWN';
+    case 'STATIC_DEMO': return '🏷️ STATIC DEMO';
+    case 'UNAVAILABLE':
+    default: return '⚪ UNAVAILABLE';
+  }
+}
 
 const statusPill = (status) => ({
   padding: '3px 8px', borderRadius: 20, fontSize: 9, fontWeight: 800, textTransform: 'capitalize',

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useTranslation } from '../hooks/useTranslation';
+import AlertResponseModal from './AlertResponseModal';
 
 const TONE_ICON = { amber: 'cloud', blue: 'route', green: 'report' };
 const CAN_CREATE = ['field', 'logistics', 'official'];
@@ -13,6 +14,8 @@ export default function AlertsList({ notify }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filterSeverity, setFilterSeverity] = useState('all');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [selectedAlertForResponse, setSelectedAlertForResponse] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ type: 'Route update', tone: 'blue', icon: 'route', title: '', text: '', road: '', severity: 'minor' });
 
@@ -63,12 +66,16 @@ export default function AlertsList({ notify }) {
 
   const filteredAlerts = alerts.filter((a) => {
     if (filterSeverity !== 'all' && a.severity !== filterSeverity) return false;
+    if (filterStatus === 'active' && a.responseStatus === 'resolved') return false;
+    if (filterStatus === 'resolved' && a.responseStatus !== 'resolved') return false;
     return true;
   });
 
   const severeCount = alerts.filter((a) => a.severity === 'severe' || a.severity === 'critical').length;
   const moderateCount = alerts.filter((a) => a.severity === 'moderate').length;
   const minorCount = alerts.filter((a) => a.severity === 'minor').length;
+  const activeCount = alerts.filter((a) => a.responseStatus !== 'resolved').length;
+  const resolvedCount = alerts.filter((a) => a.responseStatus === 'resolved').length;
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -79,8 +86,8 @@ export default function AlertsList({ notify }) {
           <span style={{ fontSize: 10, background: '#e1ede7', color: '#175b4a', padding: '2px 8px', borderRadius: 12, fontWeight: 700 }}>
             {alerts.length} Supabase Network Alerts
           </span>
-          <span style={{ fontSize: 10, background: '#fff3d6', color: '#8a6200', padding: '2px 8px', borderRadius: 12, fontWeight: 700 }}>
-            Demo Operational Data
+          <span style={{ fontSize: 10, background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: 12, fontWeight: 700 }}>
+            {activeCount} Active Responses
           </span>
         </div>
         {CAN_CREATE.includes(user.role) && (
@@ -90,7 +97,7 @@ export default function AlertsList({ notify }) {
         )}
       </div>
 
-      {/* Severity Filter Tabs */}
+      {/* Filter Tabs: Severity & Lifecycle Status */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <button
           onClick={() => setFilterSeverity('all')}
@@ -115,6 +122,21 @@ export default function AlertsList({ notify }) {
           style={filterTab(filterSeverity === 'minor', '#2b765e')}
         >
           🟢 Minor ({minorCount})
+        </button>
+
+        <span style={{ height: 16, width: 1, background: '#cbd5e1', margin: '0 4px' }} />
+
+        <button
+          onClick={() => setFilterStatus(filterStatus === 'active' ? 'all' : 'active')}
+          style={filterTab(filterStatus === 'active', '#0f766e')}
+        >
+          ⚡ Active ({activeCount})
+        </button>
+        <button
+          onClick={() => setFilterStatus(filterStatus === 'resolved' ? 'all' : 'resolved')}
+          style={filterTab(filterStatus === 'resolved', '#047857')}
+        >
+          ✅ Resolved ({resolvedCount})
         </button>
       </div>
 
@@ -161,35 +183,118 @@ export default function AlertsList({ notify }) {
             {t('alerts.noAlerts') || 'No active alerts in this category.'}
           </div>
         )}
-        {filteredAlerts.map((a) => (
-          <div key={a.id} style={alertCard(a.tone, a.severity)}>
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <b style={{ fontSize: 11, color: '#3c5c50' }}>{t(`enum.${a.type}`) || a.type}</b>
-                  <span style={severityPill(a.severity)}>{a.severity}</span>
+        {filteredAlerts.map((a) => {
+          const status = a.responseStatus || 'new';
+          const isResolvedAlert = status === 'resolved';
+
+          return (
+            <div key={a.id} style={alertCard(a.tone, a.severity, isResolvedAlert)}>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <b style={{ fontSize: 11, color: '#3c5c50' }}>{t(`enum.${a.type}`) || a.type}</b>
+                    <span style={severityPill(a.severity)}>{a.severity}</span>
+                    <span style={responseStatusPill(status)}>● {formatStatus(status)}</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <time style={{ fontSize: 10, color: '#889e94' }}>{new Date(a.createdAt).toLocaleString()}</time>
+                    {(user.role === 'official' || a.createdBy === user.id) && (
+                      <button onClick={() => deleteAlert(a.id)} style={deleteAlertBtn} title="Delete alert">✕</button>
+                    )}
+                  </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <time style={{ fontSize: 10, color: '#889e94' }}>{new Date(a.createdAt).toLocaleString()}</time>
-                  {(user.role === 'official' || a.createdBy === user.id) && (
-                    <button onClick={() => deleteAlert(a.id)} style={deleteAlertBtn} title="Delete alert">✕</button>
-                  )}
+
+                <h4 style={{ fontSize: 13, margin: '6px 0 3px', color: '#1e483b' }}>{a.title}</h4>
+                <p style={{ fontSize: 12, color: '#577267', margin: 0, lineHeight: 1.4 }}>{a.text}</p>
+
+                {a.road && (
+                  <div style={{ fontSize: 10, color: '#7d9489', marginTop: 6, fontWeight: 700 }}>
+                    📍 {t('report.road') || 'Affected corridor'}: <b>{a.road}</b>
+                  </div>
+                )}
+
+                {/* Latest response activity & Action Trigger */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 6, borderTop: '1px dashed #e2e8f0', flexWrap: 'wrap', gap: 6 }}>
+                  <div style={{ fontSize: 10, color: '#64748b' }}>
+                    {a.assignedTo ? (
+                      <span>👤 Assigned: <b>{a.assignedTo}</b></span>
+                    ) : a.latestNote ? (
+                      <span>📝 Note: <i>"{a.latestNote.slice(0, 45)}..."</i></span>
+                    ) : (
+                      <span>Awaiting multi-agency response</span>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAlertForResponse(a)}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: 5,
+                      border: isResolvedAlert ? '1px solid #cbd5e1' : '1px solid #1e745b',
+                      background: isResolvedAlert ? '#f8fafc' : '#1e745b',
+                      color: isResolvedAlert ? '#475569' : '#ffffff',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    {isResolvedAlert ? '📋 View Resolution Trail' : '⚡ Take Action / Respond ➔'}
+                  </button>
                 </div>
               </div>
-              <h4 style={{ fontSize: 13, margin: '6px 0 3px', color: '#1e483b' }}>{a.title}</h4>
-              <p style={{ fontSize: 12, color: '#577267', margin: 0, lineHeight: 1.4 }}>{a.text}</p>
-              {a.road && (
-                <div style={{ fontSize: 10, color: '#7d9489', marginTop: 6, fontWeight: 700 }}>
-                  📍 {t('report.road') || 'Affected corridor'}: <b>{a.road}</b>
-                </div>
-              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
+
+      {/* Response Action Modal */}
+      {selectedAlertForResponse && (
+        <AlertResponseModal
+          alert={selectedAlertForResponse}
+          onClose={() => setSelectedAlertForResponse(null)}
+          onResponseSuccess={() => {
+            load();
+            setSelectedAlertForResponse(null);
+          }}
+          notify={notify}
+        />
+      )}
     </div>
   );
 }
+
+const formatStatus = (s) => {
+  if (s === 'new') return 'New Alert';
+  if (s === 'acknowledged') return 'Acknowledged';
+  if (s === 'in_progress') return 'In Progress';
+  if (s === 'escalated') return 'Escalated';
+  if (s === 'resolved') return 'Resolved';
+  return s;
+};
+
+const responseStatusPill = (status) => {
+  const cfg = {
+    new: { bg: '#eff6ff', color: '#1d4ed8' },
+    acknowledged: { bg: '#f5f3ff', color: '#6d28d9' },
+    in_progress: { bg: '#fffbeb', color: '#b45309' },
+    escalated: { bg: '#fef2f2', color: '#b91c1c' },
+    resolved: { bg: '#ecfdf5', color: '#047857' },
+  }[status] || { bg: '#f1f5f9', color: '#475569' };
+
+  return {
+    fontSize: 9,
+    fontWeight: 800,
+    textTransform: 'uppercase',
+    padding: '2px 7px',
+    borderRadius: 12,
+    background: cfg.bg,
+    color: cfg.color,
+  };
+};
 
 const toggleBtn = { border: 0, background: '#1e745b', color: '#fff', borderRadius: 7, padding: '7px 14px', fontSize: 11, fontWeight: 800, cursor: 'pointer' };
 const inputStyle = { height: 38, padding: '0 10px', border: '1px solid #dce5df', borderRadius: 7, fontSize: 12, flex: 1 };
@@ -207,13 +312,25 @@ const filterTab = (active, color) => ({
   cursor: 'pointer',
 });
 
-const alertCard = (tone, severity) => {
-  const borderColor = severity === 'severe' || severity === 'critical' ? '#d9534f' : tone === 'amber' ? '#e2ab3d' : tone === 'blue' ? '#3c779a' : '#337b60';
+const alertCard = (tone, severity, isResolved) => {
+  const borderColor = isResolved
+    ? '#059669'
+    : severity === 'severe' || severity === 'critical'
+    ? '#d9534f'
+    : tone === 'amber'
+    ? '#e2ab3d'
+    : tone === 'blue'
+    ? '#3c779a'
+    : '#337b60';
+
   return {
-    padding: '12px 16px', borderRadius: 8, border: '1px solid #e1e9e3',
+    padding: '12px 16px',
+    borderRadius: 8,
+    border: '1px solid #e1e9e3',
     borderLeft: `5px solid ${borderColor}`,
-    background: '#fff',
+    background: isResolved ? '#fafdfb' : '#fff',
     boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+    opacity: isResolved ? 0.9 : 1,
   };
 };
 

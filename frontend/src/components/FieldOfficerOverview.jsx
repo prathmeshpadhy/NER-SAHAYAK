@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import FieldReportForm from './FieldReportForm';
+import IncidentDetailModal from './IncidentDetailModal';
+import AlertResponseModal from './AlertResponseModal';
 import { useTranslation } from '../hooks/useTranslation';
 
 export default function FieldOfficerOverview({ navigate, notify }) {
@@ -11,6 +13,8 @@ export default function FieldOfficerOverview({ navigate, notify }) {
   const [allReports, setAllReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [selectedReport, setSelectedReport] = useState(null);
+  const [selectedAlertForResponse, setSelectedAlertForResponse] = useState(null);
 
   const load = () => {
     setLoading(true);
@@ -96,21 +100,98 @@ export default function FieldOfficerOverview({ navigate, notify }) {
             <p style={{ fontSize: 11, color: '#7c8f87' }}>No incident reports found in the network database.</p>
           )}
           <div style={{ display: 'grid', gap: 10 }}>
-            {allReports.slice(0, 6).map((r) => (
-              <div key={r.id} style={{ padding: '10px 12px', border: '1px solid #edf1ee', borderRadius: 8, background: '#fbfdfb' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: '#61776d', flexWrap: 'wrap', gap: 4 }}>
-                  <b style={{ color: '#25483d' }}>[{r.category?.toUpperCase().replace('_', ' ')}] {r.title}</b>
-                  <span style={statusPill(r.status)}>{r.status}</span>
+            {allReports.slice(0, 6).map((r) => {
+              const hasGps = r.hasGps || (r.lat !== null && r.lat !== undefined && !isNaN(Number(r.lat)) && r.lng !== null && r.lng !== undefined && !isNaN(Number(r.lng)));
+              const hasPhoto = Boolean(r.photoDataUrl && typeof r.photoDataUrl === 'string' && r.photoDataUrl.trim().length > 0);
+
+              return (
+                <div key={r.id} style={{ padding: '10px 12px', border: '1px solid #edf1ee', borderRadius: 8, background: '#fbfdfb' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: '#61776d', flexWrap: 'wrap', gap: 4 }}>
+                    <b style={{ color: '#25483d' }}>[{r.category?.toUpperCase().replace('_', ' ')}] {r.title}</b>
+                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                      {hasPhoto && (
+                        <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: '#e0f2fe', color: '#0369a1', fontWeight: 700 }}>
+                          📷 Photo
+                        </span>
+                      )}
+                      <span style={statusPill(r.status)}>{r.status}</span>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, color: '#7a8f85', marginTop: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                    <span>{r.road ? `Corridor: ${r.road}` : 'Location: Geo-tagged'}</span>
+                    <span style={{ color: hasGps ? '#0f766e' : '#64748b' }}>
+                      {hasGps ? `🌐 Fix: ${Number(r.lat).toFixed(4)}, ${Number(r.lng).toFixed(4)}` : '🌐 GPS: Unavailable'}
+                    </span>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReport(r)}
+                        style={{
+                          padding: '2px 8px',
+                          border: '1px solid #0f766e',
+                          background: '#0f766e',
+                          color: '#fff',
+                          borderRadius: 4,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Inspect Evidence
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAlertForResponse({
+                          id: r.id,
+                          title: r.title,
+                          text: r.description || `${r.category} on ${r.road}`,
+                          road: r.road,
+                          severity: r.severity,
+                          incidentId: r.id,
+                          type: r.category,
+                          createdAt: r.createdAt || r.created_at,
+                          responseStatus: r.status === 'resolved' ? 'resolved' : 'in_progress',
+                        })}
+                        style={{
+                          padding: '2px 8px',
+                          border: '1px solid #1e745b',
+                          background: '#1e745b',
+                          color: '#fff',
+                          borderRadius: 4,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Take Action ➔
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div style={{ fontSize: 10, color: '#7a8f85', marginTop: 4, display: 'flex', justifyContent: 'space-between' }}>
-                  <span>{r.road ? `Corridor: ${r.road}` : 'Location: Geo-tagged'}</span>
-                  <span>{new Date(r.createdAt).toLocaleDateString()}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       </div>
+
+      {/* Incident Evidence Modal */}
+      <IncidentDetailModal
+        incident={selectedReport}
+        onClose={() => setSelectedReport(null)}
+      />
+
+      {/* Field Officer Alert Response Modal */}
+      {selectedAlertForResponse && (
+        <AlertResponseModal
+          alert={selectedAlertForResponse}
+          onClose={() => setSelectedAlertForResponse(null)}
+          onResponseSuccess={() => {
+            load();
+            setSelectedAlertForResponse(null);
+          }}
+          notify={notify}
+        />
+      )}
     </div>
   );
 }

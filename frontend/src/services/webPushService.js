@@ -133,8 +133,24 @@ export const showWebPushNotification = async ({
   }
 };
 
+export const NOTIFICATION_DELIVERY_STATES = {
+  IN_APP: 'IN_APP',
+  PUSH_REQUESTED: 'PUSH_REQUESTED',
+  NOT_CONFIGURED: 'NOT_CONFIGURED',
+  DELIVERY_UNKNOWN: 'DELIVERY_UNKNOWN',
+};
+
+export const getNotificationDeliveryState = () => {
+  if (!isPushSupported()) return NOTIFICATION_DELIVERY_STATES.NOT_CONFIGURED;
+  const perm = getNotificationPermission();
+  if (perm === 'granted') return NOTIFICATION_DELIVERY_STATES.PUSH_REQUESTED;
+  if (perm === 'denied') return NOTIFICATION_DELIVERY_STATES.IN_APP;
+  return NOTIFICATION_DELIVERY_STATES.NOT_CONFIGURED;
+};
+
 /**
  * Sends a role-tailored Web Push notification to the current persona
+ * Returns honest delivery status: IN_APP, PUSH_REQUESTED, NOT_CONFIGURED, or DELIVERY_UNKNOWN
  */
 export const sendRoleNotification = async (role, { type, title, detail, corridor, severity }) => {
   const roleHeaders = {
@@ -149,13 +165,42 @@ export const sendRoleNotification = async (role, { type, title, detail, corridor
     ? `${detail} [Corridor: ${corridor}] (Severity: ${severity || 'moderate'})`
     : `${detail} (Severity: ${severity || 'moderate'})`;
 
-  return showWebPushNotification({
+  let deliveryState = NOTIFICATION_DELIVERY_STATES.IN_APP;
+  let pushDispatched = false;
+
+  if (isPushSupported()) {
+    const perm = getNotificationPermission();
+    if (perm === 'granted') {
+      try {
+        pushDispatched = await showWebPushNotification({
+          title: formattedTitle,
+          body: formattedBody,
+          tag: `ner-${role}-${Date.now()}`,
+          data: { role, type, timestamp: new Date().toISOString() },
+          requireInteraction: severity === 'critical' || severity === 'severe',
+        });
+        deliveryState = pushDispatched
+          ? NOTIFICATION_DELIVERY_STATES.PUSH_REQUESTED
+          : NOTIFICATION_DELIVERY_STATES.DELIVERY_UNKNOWN;
+      } catch (_) {
+        deliveryState = NOTIFICATION_DELIVERY_STATES.DELIVERY_UNKNOWN;
+      }
+    } else if (perm === 'denied') {
+      deliveryState = NOTIFICATION_DELIVERY_STATES.IN_APP;
+    } else {
+      deliveryState = NOTIFICATION_DELIVERY_STATES.NOT_CONFIGURED;
+    }
+  } else {
+    deliveryState = NOTIFICATION_DELIVERY_STATES.NOT_CONFIGURED;
+  }
+
+  return {
+    dispatched: pushDispatched,
+    deliveryState,
+    role,
     title: formattedTitle,
     body: formattedBody,
-    tag: `ner-${role}-${Date.now()}`,
-    data: { role, type, timestamp: new Date().toISOString() },
-    requireInteraction: severity === 'critical' || severity === 'severe',
-  });
+  };
 };
 
 const webPushService = {
@@ -165,6 +210,8 @@ const webPushService = {
   registerServiceWorker,
   showWebPushNotification,
   sendRoleNotification,
+  getNotificationDeliveryState,
+  NOTIFICATION_DELIVERY_STATES,
 };
 
 export default webPushService;

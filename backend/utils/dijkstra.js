@@ -28,25 +28,30 @@ function edgeWeight(edge, { weatherSeverityByNode = {}, disruptions = [] } = {})
 
   // Active field disruption reports (landslide, flood, bridge damage)
   const relevant = disruptions.filter((d) => {
+    // If disruption is on a road and edge is not road, do not pollute
+    if (d.road && edge.road && edge.mode !== 'road' && d.road.toLowerCase().trim() !== edge.road.toLowerCase().trim()) {
+      return false;
+    }
     // If road is specified, match road name
     if (d.road && edge.road && d.road.toLowerCase().trim() === edge.road.toLowerCase().trim()) {
       return true;
     }
+    const fromN = d.fromNode || d.from_node;
+    const toN = d.toNode || d.to_node;
     // If fromNode and toNode match
-    if (d.fromNode && d.toNode) {
-      const matchEndpoints = (d.fromNode === edge.from && d.toNode === edge.to) || 
-                             (d.fromNode === edge.to && d.toNode === edge.from);
+    if (fromN && toN) {
+      const matchEndpoints = (fromN === edge.from && toN === edge.to) ||
+                             (fromN === edge.to && toN === edge.from);
       if (matchEndpoints) {
-        // If disruption specifies a road (like NH27), and this edge is a railway/waterway line, do NOT cross-pollinate
         if (d.road && edge.road && d.road.toUpperCase() !== edge.road.toUpperCase() && edge.mode !== 'road') {
           return false;
         }
         return true;
       }
     }
-    // If single node (fromNode or nodeId) is specified without toNode, match connected edges
-    const singleNode = d.fromNode || d.nodeId;
-    if (singleNode && !d.toNode) {
+    // If single node is specified without toNode, match connected edges
+    const singleNode = fromN || d.nodeId || d.node_id;
+    if (singleNode && !toN) {
       if (edge.from === singleNode || edge.to === singleNode) {
         if (d.road && edge.road && d.road.toUpperCase() !== edge.road.toUpperCase() && edge.mode !== 'road') {
           return false;
@@ -59,10 +64,17 @@ function edgeWeight(edge, { weatherSeverityByNode = {}, disruptions = [] } = {})
   let disruptionMultiplier = 1;
   let blocked = false;
   relevant.forEach((d) => {
-    if (d.severity === 'blocked') blocked = true;
-    else if (d.severity === 'severe') disruptionMultiplier = Math.max(disruptionMultiplier, 15.0); // 15x safety penalty
-    else if (d.severity === 'moderate') disruptionMultiplier = Math.max(disruptionMultiplier, 5.0);  // 5x safety penalty
-    else if (d.severity === 'minor') disruptionMultiplier = Math.max(disruptionMultiplier, 2.0);
+    const sev = (d.severity || '').toLowerCase();
+    const cat = (d.category || '').toLowerCase();
+    if (sev === 'blocked' || sev === 'critical' || cat === 'bridge_damage') {
+      blocked = true;
+    } else if (sev === 'severe' || sev === 'major' || sev === 'high') {
+      disruptionMultiplier = Math.max(disruptionMultiplier, 15.0); // 15x safety penalty
+    } else if (sev === 'moderate' || sev === 'medium') {
+      disruptionMultiplier = Math.max(disruptionMultiplier, 5.0);  // 5x safety penalty
+    } else if (sev === 'minor' || sev === 'low') {
+      disruptionMultiplier = Math.max(disruptionMultiplier, 2.0);
+    }
   });
 
   return {
@@ -261,21 +273,39 @@ function buildRouteResult(startId, endId, pathEdges, totalWeight, nodeMap) {
   const totalKm = pathEdges.reduce((s, e) => s + e.km, 0);
 
   let totalMinutes = 0;
+  let totalBaseMinutes = 0;
   const segments = pathEdges.map((e) => {
     let baseSpeed = 45;
     if (e.mode === 'air') baseSpeed = 500;
     else if (e.mode === 'railway') baseSpeed = 55;
     else if (e.mode === 'waterway') baseSpeed = 24;
 
+    const baseSegmentTime = Math.round((e.km / baseSpeed) * 60);
+    totalBaseMinutes += (e.km / baseSpeed) * 60;
+
     const edgeRatio = (e.disruptionMultiplier || 1) * Math.max(1, (e.weatherSeverity || 0) * 2);
     const speed = Math.max(12, baseSpeed / Math.sqrt(edgeRatio));
     const segmentTime = Math.round((e.km / speed) * 60);
     totalMinutes += (e.km / speed) * 60;
+    const segmentDelay = Math.max(0, segmentTime - baseSegmentTime);
 
-    // Segment condition
-    const isDisrupted = (e.weatherSeverity > 0.6 || (e.disruptionMultiplier && e.disruptionMultiplier >= 4.0));
-    const isCaution = (e.weatherSeverity > 0.3 || (e.disruptionMultiplier && e.disruptionMultiplier >= 1.8));
-    const condition = isDisrupted ? 'disrupted' : (isCaution ? 'caution' : 'clear');
+    // Segment condition & normalized accessibility state
+    let accessibilityState = 'OPEN';
+    if (e.blocked) {
+      accessibilityState = 'BLOCKED';
+    } else if ((e.disruptionMultiplier && e.disruptionMultiplier >= 14) || (e.weatherSeverity && e.weatherSeverity > 0.6)) {
+      accessibilityState = 'SEVERELY_DISRUPTED';
+    } else if (e.disruptionMultiplier && e.disruptionMultiplier >= 4) {
+      accessibilityState = 'RESTRICTED';
+    } else if ((e.disruptionMultiplier && e.disruptionMultiplier >= 1.8) || (e.weatherSeverity && e.weatherSeverity > 0.3)) {
+      accessibilityState = 'CAUTION';
+    } else {
+      accessibilityState = 'OPEN';
+    }
+
+    const condition = accessibilityState === 'BLOCKED' ? 'blocked' :
+                      (accessibilityState === 'SEVERELY_DISRUPTED' || accessibilityState === 'RESTRICTED' ? 'disrupted' :
+                      (accessibilityState === 'CAUTION' ? 'caution' : 'clear'));
 
     // Individual segment safety percentage (0-100)
     let segmentSafety = 98;
@@ -295,12 +325,15 @@ function buildRouteResult(startId, endId, pathEdges, totalWeight, nodeMap) {
       km: e.km,
       distance: e.km,
       time: segmentTime,
+      baseTimeMinutes: baseSegmentTime,
+      estimatedDelayMinutes: segmentDelay,
       road: e.road,
       corridor: e.road,
       mode: e.mode || 'road',
       weatherSeverity: Number((e.weatherSeverity || 0).toFixed(2)),
       disruptionMultiplier: e.disruptionMultiplier || 1,
       condition,
+      accessibilityState,
       risk: condition,
       status: condition,
       safetyIndex: segmentSafety,
@@ -308,6 +341,8 @@ function buildRouteResult(startId, endId, pathEdges, totalWeight, nodeMap) {
   });
 
   const etaMinutes = Math.round(totalMinutes);
+  const baseDurationMinutes = Math.round(totalBaseMinutes);
+  const estimatedDelayMinutes = Math.max(0, etaMinutes - baseDurationMinutes);
   const avgSpeedKmh = totalKm > 0 ? Number((totalKm / (etaMinutes / 60)).toFixed(1)) : 0;
 
   // Distance-weighted safety aggregation across all segments
@@ -326,6 +361,12 @@ function buildRouteResult(startId, endId, pathEdges, totalWeight, nodeMap) {
     routeSafety = Math.min(routeSafety, 78);
   }
   const safetyIndex = Math.max(15, Math.min(99, Math.round(routeSafety)));
+
+  // Identify worst accessibility state along the chosen route
+  const accessRank = { OPEN: 0, CAUTION: 1, RESTRICTED: 2, SEVERELY_DISRUPTED: 3, BLOCKED: 4 };
+  const worstAccessibility = segments.reduce((worst, s) => {
+    return (accessRank[s.accessibilityState] || 0) > (accessRank[worst] || 0) ? s.accessibilityState : worst;
+  }, 'OPEN');
 
   // Identify multimodal transfer nodes
   const transfers = [];
@@ -372,7 +413,10 @@ function buildRouteResult(startId, endId, pathEdges, totalWeight, nodeMap) {
     avgSpeedKmh: Number(avgSpeedKmh.toFixed(1)),
     etaMinutes,
     totalTime: etaMinutes,
+    baseDurationMinutes,
+    estimatedDelayMinutes,
     safetyIndex,
+    accessibilityState: worstAccessibility,
   };
 }
 
@@ -400,4 +444,4 @@ function findAlternateRoutes(startId, endId, context = {}, k = 3) {
   return results;
 }
 
-module.exports = { findRoute, findAlternateRoutes, buildGraph };
+module.exports = { findRoute, findAlternateRoutes, buildGraph, edgeWeight };

@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { offlineQueue, isOnline } from '../services/offlineQueue';
+import { compressImage, validateImageFile } from '../utils/imageCompressor';
 import { acquireGpsPosition } from '../services/gpsHelper';
 import { useTranslation } from '../hooks/useTranslation';
 import { useAuth } from '../context/AuthContext';
+import IncidentDetailModal from './IncidentDetailModal';
 
 const CATEGORIES = [
   { id: 'road_block', label: 'Road blocked / Obstruction' },
@@ -26,6 +28,7 @@ export default function FieldReportForm({ notify }) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [inspectingReport, setInspectingReport] = useState(null);
 
   const [nodes, setNodes] = useState([]);
   const [allReports, setAllReports] = useState([]);
@@ -47,6 +50,9 @@ export default function FieldReportForm({ notify }) {
   const [photo, setPhoto] = useState(null);
   const [busy, setBusy] = useState(false);
   const [queued, setQueued] = useState(offlineQueue.count());
+  const [queueItems, setQueueItems] = useState(offlineQueue.all());
+  const [showQueueDrawer, setShowQueueDrawer] = useState(false);
+  const [networkStatus, setNetworkStatus] = useState(isOnline() ? 'online' : 'offline');
 
   const load = () => {
     setLoading(true);
@@ -60,10 +66,55 @@ export default function FieldReportForm({ notify }) {
       .finally(() => setLoading(false));
   };
 
+  const syncNow = async () => {
+    if (busy) return;
+    setBusy(true);
+    setNetworkStatus('syncing');
+    try {
+      const res = await offlineQueue.flush(api);
+      setQueued(offlineQueue.count());
+      setQueueItems(offlineQueue.all());
+      if (res.synced > 0) {
+        notify && notify(`Synced ${res.synced} offline report(s) with canonical server.`);
+        load();
+      }
+      if (res.failed && res.failed.length > 0) {
+        setError(`${res.failed.length} report(s) failed sync validation.`);
+      }
+    } catch (err) {
+      setError(`Sync failed: ${err.message}`);
+    } finally {
+      setBusy(false);
+      setNetworkStatus(isOnline() ? 'online' : 'offline');
+    }
+  };
+
   useEffect(() => {
     load();
     const interval = setInterval(load, 30000);
-    return () => clearInterval(interval);
+
+    const handleOnline = () => {
+      setNetworkStatus('online');
+      notify && notify('Network connection re-established. Background sync initiating...');
+      if (offlineQueue.count() > 0) {
+        syncNow();
+      }
+    };
+
+    const handleOffline = () => {
+      setNetworkStatus('offline');
+      notify && notify('Network disconnected. Offline mode active — reports will queue locally.');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const set = (key) => (e) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
@@ -78,12 +129,27 @@ export default function FieldReportForm({ notify }) {
     );
   };
 
-  const onPhoto = (e) => {
+  const onPhoto = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setPhoto(reader.result);
-    reader.readAsDataURL(file);
+
+    const validation = validateImageFile(file);
+    if (!validation.valid) {
+      setError(validation.error);
+      return;
+    }
+
+    try {
+      setBusy(true);
+      const compressed = await compressImage(file, { maxDimension: 1280, quality: 0.82 });
+      setPhoto(compressed);
+      setError('');
+      if (notify) notify('Photo evidence attached (compressed for low-bandwidth transfer).');
+    } catch (compErr) {
+      setError(`Photo processing failed: ${compErr.message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const submit = async (e) => {
@@ -91,23 +157,29 @@ export default function FieldReportForm({ notify }) {
     if (!form.title.trim()) { setError('Please give the report a short title.'); return; }
     setError('');
     setBusy(true);
+
+    const clientId = `offline-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const payload = {
       ...form,
-      lat: coords?.lat,
-      lng: coords?.lng,
+      clientId,
+      lat: coords?.lat !== undefined ? coords.lat : null,
+      lng: coords?.lng !== undefined ? coords.lng : null,
       photoDataUrl: photo,
       createdAt: new Date().toISOString(),
     };
+
     try {
       if (isOnline()) {
         const res = await api.createReport(payload);
         setAllReports((prev) => [res.report, ...prev]);
-        notify && notify('Incident report submitted and active across network.');
+        notify && notify('Incident report accepted by canonical server and live across network.');
       } else {
         offlineQueue.add(payload);
         setQueued(offlineQueue.count());
-        notify && notify('You are offline — report saved locally and will sync automatically.');
+        setQueueItems(offlineQueue.all());
+        notify && notify('Offline mode: report safely saved to local queue and will sync automatically upon reconnection.');
       }
+
       setForm({
         category: 'road_block',
         severity: 'moderate',
@@ -123,9 +195,12 @@ export default function FieldReportForm({ notify }) {
       setPhoto(null);
       setActiveTab('list');
     } catch (err) {
+      // Server unreachable or network timeout: fall back to local queue
       offlineQueue.add(payload);
       setQueued(offlineQueue.count());
-      setError(`Couldn't reach the server (${err.message}) — saved locally instead.`);
+      setQueueItems(offlineQueue.all());
+      setError(`Network error (${err.message}) — report securely stored in local offline queue.`);
+      notify && notify('Report preserved in local offline queue.');
     } finally {
       setBusy(false);
     }
@@ -141,18 +216,25 @@ export default function FieldReportForm({ notify }) {
     }
   };
 
-  const syncNow = async () => {
+  const retryQueuedItem = async (clientId) => {
     setBusy(true);
     try {
-      const res = await offlineQueue.flush(api);
+      await offlineQueue.retry(clientId, api);
       setQueued(offlineQueue.count());
-      notify && notify(`Synced ${res.synced} offline report(s).`);
+      setQueueItems(offlineQueue.all());
+      notify && notify('Retried sync for queued report.');
       load();
     } catch (err) {
-      setError(`Sync failed: ${err.message}`);
+      setError(`Retry failed: ${err.message}`);
     } finally {
       setBusy(false);
     }
+  };
+
+  const removeQueuedItem = (clientId) => {
+    offlineQueue.remove(clientId);
+    setQueued(offlineQueue.count());
+    setQueueItems(offlineQueue.all());
   };
 
   // Filtered reports
@@ -177,7 +259,7 @@ export default function FieldReportForm({ notify }) {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      {/* Top Controls & Navigation */}
+      {/* Top Controls, Connectivity Status & Navigation */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
@@ -195,9 +277,23 @@ export default function FieldReportForm({ notify }) {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', background: '#f3f4f6', padding: '3px 8px', borderRadius: 6 }}>
-            Demo Operational Data
-          </span>
+          {/* Connectivity Status Badge */}
+          {networkStatus === 'online' && (
+            <span style={{ fontSize: 11, fontWeight: 800, color: '#065f46', background: '#d1fae5', border: '1px solid #a7f3d0', padding: '4px 10px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              🟢 ONLINE
+            </span>
+          )}
+          {networkStatus === 'syncing' && (
+            <span style={{ fontSize: 11, fontWeight: 800, color: '#1e40af', background: '#dbeafe', border: '1px solid #bfdbfe', padding: '4px 10px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              🔄 SYNCING...
+            </span>
+          )}
+          {networkStatus === 'offline' && (
+            <span style={{ fontSize: 11, fontWeight: 800, color: '#991b1b', background: '#fee2e2', border: '1px solid #fecaca', padding: '4px 10px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              🔴 OFFLINE MODE
+            </span>
+          )}
+
           <button
             onClick={load}
             style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}
@@ -207,10 +303,118 @@ export default function FieldReportForm({ notify }) {
         </div>
       </div>
 
-      {queued > 0 && (
-        <div style={queuedBanner}>
-          <span>⚠️ {queued} {t('report.offlineReports') || `report${queued > 1 ? 's' : ''} saved offline, waiting to sync.`}</span>
-          <button onClick={syncNow} disabled={busy} style={syncBtn}>{t('report.syncNow') || 'Sync now'}</button>
+      {/* Offline Queue Bar & Details Drawer */}
+      {(queued > 0 || queueItems.length > 0) && (
+        <div style={{ display: 'grid', gap: 8, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13 }}>📶</span>
+              <div>
+                <b style={{ fontSize: 12, color: '#92400e' }}>
+                  Offline Field Operations Queue: {queued} pending report{queued === 1 ? '' : 's'}
+                </b>
+                <div style={{ fontSize: 10, color: '#b45309', marginTop: 1 }}>
+                  Reports saved locally in localStorage with stable idempotency keys. Will sync upon network reconnection.
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                onClick={() => setShowQueueDrawer(!showQueueDrawer)}
+                style={{ padding: '5px 10px', background: '#fff', border: '1px solid #d97706', color: '#b45309', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+              >
+                {showQueueDrawer ? 'Hide Queue Details ▲' : `View Queue (${queueItems.length}) ▼`}
+              </button>
+              <button
+                type="button"
+                onClick={syncNow}
+                disabled={busy}
+                style={{ padding: '5px 12px', background: '#b45309', border: 0, color: '#fff', borderRadius: 6, fontSize: 11, fontWeight: 800, cursor: 'pointer' }}
+              >
+                {busy ? 'Syncing...' : 'Sync Now 🔄'}
+              </button>
+            </div>
+          </div>
+
+          {/* Detailed Queue Cards */}
+          {showQueueDrawer && (
+            <div style={{ display: 'grid', gap: 8, marginTop: 8, borderTop: '1px solid #fef3c7', paddingTop: 8 }}>
+              {queueItems.map((item) => {
+                const isSynced = item.syncStatus === 'synced';
+                const isFailed = item.syncStatus === 'failed';
+                const isSyncing = item.syncStatus === 'syncing';
+
+                return (
+                  <div
+                    key={item.clientId}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: 8,
+                      background: '#ffffff',
+                      padding: '10px 12px',
+                      borderRadius: 6,
+                      border: `1px solid ${isSynced ? '#86efac' : isFailed ? '#fca5a5' : '#fed7aa'}`,
+                    }}
+                  >
+                    <div style={{ display: 'grid', gap: 2 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span
+                          style={{
+                            fontSize: 9,
+                            fontWeight: 800,
+                            padding: '2px 6px',
+                            borderRadius: 4,
+                            color: isSynced ? '#15803d' : isFailed ? '#b91c1c' : isSyncing ? '#1d4ed8' : '#b45309',
+                            background: isSynced ? '#dcfce7' : isFailed ? '#fee2e2' : isSyncing ? '#dbeafe' : '#fef3c7',
+                          }}
+                        >
+                          {item.syncStatus.toUpperCase()}
+                        </span>
+                        <b style={{ fontSize: 12, color: '#111827' }}>{item.title}</b>
+                        <span style={{ fontSize: 10, color: '#6b7280' }}>({item.road || 'Corridor'})</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: '#4b5563', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                        <span>🆔 <code>{item.clientId.slice(0, 18)}…</code></span>
+                        <span>{item.hasGps ? `📍 GPS: ${item.lat.toFixed(4)}, ${item.lng.toFixed(4)}` : '📍 No GPS Coordinates'}</span>
+                        <span>{item.photoDataUrl ? '📷 Photo Attached' : 'No Photo'}</span>
+                        {item.serverIncidentId && (
+                          <span style={{ color: '#15803d', fontWeight: 700 }}>✓ Server ID: {item.serverIncidentId.slice(0, 8)}…</span>
+                        )}
+                        {item.lastError && (
+                          <span style={{ color: '#b91c1c', fontWeight: 700 }}>⚠️ {item.lastError} (Retries: {item.retryCount})</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {isFailed && (
+                        <button
+                          type="button"
+                          onClick={() => retryQueuedItem(item.clientId)}
+                          disabled={busy}
+                          style={{ padding: '4px 8px', fontSize: 10, fontWeight: 700, background: '#fee2e2', border: '1px solid #fca5a5', color: '#991b1b', borderRadius: 4, cursor: 'pointer' }}
+                        >
+                          Retry
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removeQueuedItem(item.clientId)}
+                        style={{ padding: '4px 8px', fontSize: 10, fontWeight: 700, background: '#f3f4f6', border: '1px solid #d1d5db', color: '#4b5563', borderRadius: 4, cursor: 'pointer' }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -297,34 +501,61 @@ export default function FieldReportForm({ notify }) {
                       <div style={{ fontSize: 10, color: '#4b5563', display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 3 }}>
                         <span>📍 <b>Road/Corridor:</b> {r.road || 'State Highway'}</span>
                         <span>🏷️ <b>Category:</b> {r.category ? r.category.replace('_', ' ').toUpperCase() : 'GENERAL'}</span>
-                        {r.lat && <span>🌐 <b>GPS:</b> {Number(r.lat).toFixed(4)}, {Number(r.lng).toFixed(4)}</span>}
+                        <span style={{ color: (r.hasGps || (r.lat !== null && r.lat !== undefined && !isNaN(Number(r.lat)))) ? '#0f766e' : '#6b7280', fontWeight: 600 }}>
+                          {(r.hasGps || (r.lat !== null && r.lat !== undefined && !isNaN(Number(r.lat)))) ? `🌐 GPS: ${Number(r.lat).toFixed(4)}, ${Number(r.lng).toFixed(4)}` : '🌐 GPS: Unavailable'}
+                        </span>
+                        {r.photoDataUrl && (
+                          <span style={{ color: '#0369a1', fontWeight: 700 }}>📷 Photo Attached</span>
+                        )}
                         <span>⏱️ <b>Estimated Impact:</b> Dynamic Disruption Penalty</span>
                       </div>
                     </div>
 
-                    {/* Officer Status Control */}
-                    {isOfficerOrAdmin && r.status !== 'resolved' && (
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                        {r.status !== 'verified' && (
-                          <button
-                            onClick={() => handleStatusChange(r.id, 'verified')}
-                            style={verifyBtnStyle}
-                          >
-                            ✓ Verify
-                          </button>
-                        )}
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => setInspectingReport(r)}
+                        style={{
+                          padding: '4px 10px',
+                          border: '1px solid #0f766e',
+                          background: '#f0fdfa',
+                          color: '#0f766e',
+                          borderRadius: 5,
+                          fontSize: 10,
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        🔍 View Evidence Details
+                      </button>
+
+                      {isOfficerOrAdmin && (r.status === 'reported' || r.status === 'under_review') && (
                         <button
+                          type="button"
+                          onClick={() => handleStatusChange(r.id, 'verified')}
+                          style={verifyBtnStyle}
+                        >
+                          ✓ Verify Hazard
+                        </button>
+                      )}
+
+                      {isOfficerOrAdmin && r.status !== 'resolved' && (
+                        <button
+                          type="button"
                           onClick={() => handleStatusChange(r.id, 'resolved')}
                           style={resolveBtnStyle}
                         >
-                          Resolve & Clear
+                          Mark Resolved
                         </button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
 
                   {r.description && (
-                    <p style={{ margin: '8px 0 0', fontSize: 11, color: '#4b5563', lineHeight: 1.4, background: '#f9fafb', padding: '6px 10px', borderRadius: 6 }}>
+                    <p style={{ margin: '8px 0 0', fontSize: 11, color: '#4b5563', lineHeight: 1.4 }}>
                       {r.description}
                     </p>
                   )}
@@ -335,14 +566,20 @@ export default function FieldReportForm({ notify }) {
         </div>
       )}
 
-      {/* VIEW 2: SUBMIT INCIDENT REPORT FORM */}
+      {/* VIEW 2: NEW INCIDENT FORM */}
       {activeTab === 'form' && (
         <form onSubmit={submit} style={{ display: 'grid', gap: 14, background: '#ffffff', padding: 20, borderRadius: 8, border: '1px solid #e5e7eb' }}>
-          <h3 style={{ margin: 0, fontSize: 14, color: '#111827', fontWeight: 800 }}>
-            Submit Field Incident / Road Hazard Report
-          </h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0, fontSize: 14, color: '#111827', fontWeight: 800 }}>
+              Submit Field Incident / Road Hazard Report
+            </h3>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, background: isOnline() ? '#dcfce7' : '#fee2e2', color: isOnline() ? '#15803d' : '#991b1b' }}>
+              {isOnline() ? 'Mode: Online Direct Dispatch' : 'Mode: Offline Local Queue'}
+            </span>
+          </div>
+
           <p style={{ margin: '0 0 8px', fontSize: 11, color: '#6b7280' }}>
-            Geo-tagged incident reports immediately feed into the Dijkstra network graph to recalculate risk-weighted routes.
+            Geo-tagged incident reports feed directly into the Dijkstra network graph to recalculate risk-weighted routes upon server acceptance.
           </p>
 
           <div style={rowStyle}>
@@ -417,7 +654,7 @@ export default function FieldReportForm({ notify }) {
               {coords ? `📍 GPS Fix: ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}` : (t('report.attachGPS') || '📍 Attach Live GPS Location')}
             </button>
             <label style={secondaryBtn}>
-              {photo ? '✓ Photo Evidence Attached' : '📷 Attach On-Site Photo'}
+              {photo ? '✓ Photo Evidence Attached (Compressed)' : '📷 Attach On-Site Photo'}
               <input type="file" accept="image/*" onChange={onPhoto} style={{ display: 'none' }} />
             </label>
           </div>
@@ -437,11 +674,17 @@ export default function FieldReportForm({ notify }) {
               type="submit"
               style={btnStyle}
             >
-              {busy ? 'Broadcasting…' : isOnline() ? 'Broadcast Incident to Network' : 'Save Offline (Sync Later)'}
+              {busy ? 'Processing…' : isOnline() ? 'Broadcast Incident to Network' : 'Save Offline (Sync Later)'}
             </button>
           </div>
         </form>
       )}
+
+      {/* Incident Evidence Modal */}
+      <IncidentDetailModal
+        incident={inspectingReport}
+        onClose={() => setInspectingReport(null)}
+      />
     </div>
   );
 }
@@ -540,5 +783,3 @@ const inputStyle = { height: 40, padding: '0 12px', border: '1px solid #d1d5db',
 const selectStyle = { height: 40, padding: '0 10px', border: '1px solid #d1d5db', borderRadius: 7, fontSize: 12, width: '100%' };
 const btnStyle = { height: 42, padding: '0 20px', border: 0, borderRadius: 7, color: '#fff', background: '#0f766e', fontSize: 12, fontWeight: 800, cursor: 'pointer' };
 const secondaryBtn = { display: 'inline-flex', alignItems: 'center', height: 38, padding: '0 14px', border: '1px solid #d1d5db', borderRadius: 7, background: '#fff', color: '#0f766e', fontSize: 11, fontWeight: 800, cursor: 'pointer' };
-const queuedBanner = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', border: '1px solid #f2d9a6', borderRadius: 8, background: '#fff8e8', fontSize: 11, fontWeight: 700, color: '#8a6b1f' };
-const syncBtn = { border: 0, background: '#8a6b1f', color: '#fff', borderRadius: 6, padding: '6px 12px', fontSize: 10, fontWeight: 800, cursor: 'pointer' };

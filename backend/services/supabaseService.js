@@ -255,13 +255,92 @@ async function getAlerts(limit = 100) {
         severity: a.severity || 'minor',
         createdAt: a.created_at,
         createdBy: a.created_by,
+        incidentId: a.incident_id || null,
+        responseStatus: a.response_status || 'new',
+        assignedTo: a.assigned_to || null,
+        assignedRole: a.assigned_role || null,
+        latestAction: a.latest_action || null,
+        latestNote: a.latest_note || null,
+        updatedAt: a.updated_at || a.created_at,
         isDemo: a.is_demo,
       }));
     }
   }
 
   // SQLite fallback
-  return db.prepare('SELECT * FROM alerts ORDER BY createdAt DESC LIMIT ?').all(limit);
+  const rows = db.prepare('SELECT * FROM alerts ORDER BY createdAt DESC LIMIT ?').all(limit);
+  return rows.map((a) => ({
+    id: a.id,
+    type: a.type,
+    tone: a.tone || 'amber',
+    icon: a.icon || 'bell',
+    title: a.title,
+    text: a.text,
+    nodeId: a.nodeId,
+    road: a.road,
+    severity: a.severity || 'minor',
+    createdAt: a.createdAt,
+    createdBy: a.createdBy,
+    incidentId: a.incidentId || null,
+    responseStatus: a.responseStatus || 'new',
+    assignedTo: a.assignedTo || null,
+    assignedRole: a.assignedRole || null,
+    latestAction: a.latestAction || null,
+    latestNote: a.latestNote || null,
+    updatedAt: a.updatedAt || a.createdAt,
+  }));
+}
+
+async function getAlertById(id) {
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    const { data, error } = await supabase.from('alerts').select('*').eq('id', id).maybeSingle();
+    if (!error && data) {
+      return {
+        id: data.id,
+        type: data.type,
+        tone: data.tone || 'amber',
+        icon: data.icon || 'bell',
+        title: data.title,
+        text: data.text,
+        nodeId: data.node_id,
+        road: data.road,
+        severity: data.severity || 'minor',
+        createdAt: data.created_at,
+        createdBy: data.created_by,
+        incidentId: data.incident_id || null,
+        responseStatus: data.response_status || 'new',
+        assignedTo: data.assigned_to || null,
+        assignedRole: data.assigned_role || null,
+        latestAction: data.latest_action || null,
+        latestNote: data.latest_note || null,
+        updatedAt: data.updated_at || data.created_at,
+      };
+    }
+  }
+
+  const a = db.prepare('SELECT * FROM alerts WHERE id = ?').get(id);
+  if (!a) return null;
+  return {
+    id: a.id,
+    type: a.type,
+    tone: a.tone || 'amber',
+    icon: a.icon || 'bell',
+    title: a.title,
+    text: a.text,
+    nodeId: a.nodeId,
+    road: a.road,
+    severity: a.severity || 'minor',
+    createdAt: a.createdAt,
+    createdBy: a.createdBy,
+    incidentId: a.incidentId || null,
+    responseStatus: a.responseStatus || 'new',
+    assignedTo: a.assignedTo || null,
+    assignedRole: a.assignedRole || null,
+    latestAction: a.latestAction || null,
+    latestNote: a.latestNote || null,
+    updatedAt: a.updatedAt || a.createdAt,
+  };
 }
 
 async function createAlert(alertData) {
@@ -277,6 +356,13 @@ async function createAlert(alertData) {
     road: alertData.road || null,
     severity: alertData.severity || 'minor',
     created_by: alertData.createdBy || null,
+    incident_id: alertData.incidentId || null,
+    response_status: alertData.responseStatus || 'new',
+    assigned_to: alertData.assignedTo || null,
+    assigned_role: alertData.assignedRole || null,
+    latest_action: alertData.latestAction || null,
+    latest_note: alertData.latestNote || null,
+    updated_at: alertData.updatedAt || new Date().toISOString(),
     is_demo: false,
     created_at: alertData.createdAt || new Date().toISOString(),
   };
@@ -288,9 +374,28 @@ async function createAlert(alertData) {
   }
 
   try {
-    db.prepare(`INSERT INTO alerts (id,type,tone,icon,title,text,nodeId,road,severity,createdAt,createdBy)
-      VALUES (@id,@type,@tone,@icon,@title,@text,@nodeId,@road,@severity,@createdAt,@createdBy)`)
-      .run({ ...alertData, id, nodeId: record.node_id, createdBy: record.created_by, createdAt: record.created_at });
+    db.prepare(`INSERT INTO alerts (id,type,tone,icon,title,text,nodeId,road,severity,createdAt,createdBy,incidentId,responseStatus,assignedTo,assignedRole,latestAction,latestNote,updatedAt)
+      VALUES (@id,@type,@tone,@icon,@title,@text,@nodeId,@road,@severity,@createdAt,@createdBy,@incidentId,@responseStatus,@assignedTo,@assignedRole,@latestAction,@latestNote,@updatedAt)`)
+      .run({
+        id,
+        type: record.type,
+        tone: record.tone,
+        icon: record.icon,
+        title: record.title,
+        text: record.text,
+        nodeId: record.node_id,
+        road: record.road,
+        severity: record.severity,
+        createdAt: record.created_at,
+        createdBy: record.created_by,
+        incidentId: record.incident_id,
+        responseStatus: record.response_status,
+        assignedTo: record.assigned_to,
+        assignedRole: record.assigned_role,
+        latestAction: record.latest_action,
+        latestNote: record.latest_note,
+        updatedAt: record.updated_at,
+      });
   } catch (_) {}
 
   await logActivity(alertData.createdBy, 'alert_created', 'alert', id, `Alert published: ${alertData.title}`);
@@ -307,6 +412,259 @@ async function createAlert(alertData) {
     severity: record.severity,
     createdAt: record.created_at,
     createdBy: record.created_by,
+    incidentId: record.incident_id,
+    responseStatus: record.response_status,
+    assignedTo: record.assigned_to,
+    assignedRole: record.assigned_role,
+    latestAction: record.latest_action,
+    latestNote: record.latest_note,
+    updatedAt: record.updated_at,
+  };
+}
+
+async function getAlertResponses(alertId) {
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('alert_responses')
+      .select('*')
+      .eq('alert_id', alertId)
+      .order('created_at', { ascending: true });
+    if (!error && data) {
+      return data.map((r) => ({
+        id: r.id,
+        alertId: r.alert_id,
+        incidentId: r.incident_id,
+        actorUserId: r.actor_user_id,
+        actorName: r.actor_name,
+        actorRole: r.actor_role,
+        actionType: r.action_type,
+        previousStatus: r.previous_status,
+        newStatus: r.new_status,
+        note: r.note,
+        assignedTo: r.assigned_to,
+        clientId: r.client_id,
+        createdAt: r.created_at,
+      }));
+    }
+  }
+
+  // SQLite fallback
+  const rows = db.prepare('SELECT * FROM alert_responses WHERE alertId = ? ORDER BY createdAt ASC').all(alertId);
+  return rows;
+}
+
+const VALID_ACTIONS = ['ACKNOWLEDGE', 'CLAIM', 'UPDATE_STATUS', 'ADD_NOTE', 'ESCALATE', 'RESOLVE'];
+const VALID_STATUSES = ['new', 'acknowledged', 'in_progress', 'escalated', 'resolved'];
+
+const ROLE_PERMISSIONS = {
+  official: ['ACKNOWLEDGE', 'CLAIM', 'UPDATE_STATUS', 'ADD_NOTE', 'ESCALATE', 'RESOLVE'],
+  logistics: ['ACKNOWLEDGE', 'CLAIM', 'UPDATE_STATUS', 'ADD_NOTE', 'ESCALATE'],
+  field: ['ACKNOWLEDGE', 'CLAIM', 'UPDATE_STATUS', 'ADD_NOTE', 'ESCALATE', 'RESOLVE'],
+  driver: ['ACKNOWLEDGE', 'ADD_NOTE'],
+};
+
+function getAllowedActionsForRole(role, alert) {
+  const baseAllowed = ROLE_PERMISSIONS[role] || [];
+  if (!alert) return baseAllowed;
+
+  // Filter based on current status
+  const currentStatus = alert.responseStatus || 'new';
+  if (currentStatus === 'resolved') {
+    // Only adding notes is permitted once resolved
+    return baseAllowed.filter((a) => a === 'ADD_NOTE');
+  }
+  return baseAllowed;
+}
+
+async function recordAlertResponse(alertId, userId, userRole, { actionType, note, newStatus, assignedTo, clientId, clearHazard, resolveIncident } = {}) {
+  const normAction = (actionType || '').trim().toUpperCase();
+  if (!VALID_ACTIONS.includes(normAction)) {
+    const err = new Error(`Invalid action type "${normAction}". Must be one of: ${VALID_ACTIONS.join(', ')}`);
+    err.status = 400;
+    throw err;
+  }
+
+  const allowed = ROLE_PERMISSIONS[userRole] || [];
+  if (!allowed.includes(normAction)) {
+    const err = new Error(`Role "${userRole}" is not authorized to perform action "${normAction}"`);
+    err.status = 403;
+    throw err;
+  }
+
+  if (note && note.length > 2000) {
+    const err = new Error('Response note must be 2000 characters or fewer');
+    err.status = 400;
+    throw err;
+  }
+
+  const alert = await getAlertById(alertId);
+  if (!alert) {
+    const err = new Error(`Alert "${alertId}" not found`);
+    err.status = 404;
+    throw err;
+  }
+
+  // Idempotency check via clientId (for offline sync)
+  if (clientId) {
+    const existing = db.prepare('SELECT * FROM alert_responses WHERE clientId = ?').get(clientId);
+    if (existing) {
+      const history = await getAlertResponses(alertId);
+      return {
+        response: existing,
+        alert,
+        history,
+        allowedActions: getAllowedActionsForRole(userRole, alert),
+        idempotent: true,
+      };
+    }
+  }
+
+  const prevStatus = alert.responseStatus || 'new';
+  let derivedStatus = prevStatus;
+
+  switch (normAction) {
+    case 'ACKNOWLEDGE':
+      derivedStatus = prevStatus === 'new' ? 'acknowledged' : prevStatus;
+      break;
+    case 'CLAIM':
+      derivedStatus = 'in_progress';
+      break;
+    case 'ADD_NOTE':
+      derivedStatus = prevStatus;
+      break;
+    case 'ESCALATE':
+      derivedStatus = 'escalated';
+      break;
+    case 'RESOLVE':
+      derivedStatus = 'resolved';
+      break;
+    case 'UPDATE_STATUS': {
+      const target = (newStatus || '').trim().toLowerCase();
+      if (!VALID_STATUSES.includes(target)) {
+        const err = new Error(`Invalid status "${target}". Must be one of: ${VALID_STATUSES.join(', ')}`);
+        err.status = 400;
+        throw err;
+      }
+      // Cannot transition out of resolved to new/acknowledged
+      if (prevStatus === 'resolved' && (target === 'new' || target === 'acknowledged')) {
+        const err = new Error(`Cannot transition alert from "${prevStatus}" to "${target}"`);
+        err.status = 400;
+        throw err;
+      }
+      derivedStatus = target;
+      break;
+    }
+    default:
+      derivedStatus = prevStatus;
+  }
+
+  // Look up user name for actor identity
+  const actorUser = await getUserById(userId);
+  const actorName = actorUser ? actorUser.name : `User (${userRole})`;
+
+  const responseId = uuid();
+  const now = new Date().toISOString();
+  const responseRecord = {
+    id: responseId,
+    alertId,
+    incidentId: alert.incidentId || null,
+    actorUserId: userId,
+    actorName,
+    actorRole: userRole,
+    actionType: normAction,
+    previousStatus: prevStatus,
+    newStatus: derivedStatus,
+    note: (note || '').trim() || null,
+    assignedTo: assignedTo || alert.assignedTo || null,
+    clientId: clientId || null,
+    createdAt: now,
+  };
+
+  // Persist response in SQLite
+  try {
+    db.prepare(`INSERT INTO alert_responses
+      (id, alertId, incidentId, actorUserId, actorName, actorRole, actionType, previousStatus, newStatus, note, assignedTo, clientId, createdAt)
+      VALUES (@id, @alertId, @incidentId, @actorUserId, @actorName, @actorRole, @actionType, @previousStatus, @newStatus, @note, @assignedTo, @clientId, @createdAt)`)
+      .run(responseRecord);
+  } catch (_) {}
+
+  // Update alert in SQLite
+  try {
+    db.prepare(`UPDATE alerts SET
+      responseStatus = ?,
+      assignedTo = COALESCE(?, assignedTo),
+      latestAction = ?,
+      latestNote = COALESCE(?, latestNote),
+      updatedAt = ?
+      WHERE id = ?`).run(
+        derivedStatus,
+        assignedTo || null,
+        normAction,
+        responseRecord.note,
+        now,
+        alertId
+      );
+  } catch (_) {}
+
+  // Persist in Supabase if configured
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from('alert_responses').insert({
+        id: responseId,
+        alert_id: alertId,
+        incident_id: alert.incidentId || null,
+        actor_user_id: userId,
+        actor_name: actorName,
+        actor_role: userRole,
+        action_type: normAction,
+        previous_status: prevStatus,
+        new_status: derivedStatus,
+        note: responseRecord.note,
+        assigned_to: responseRecord.assignedTo,
+        client_id: clientId || null,
+        created_at: now,
+      });
+      await supabase.from('alerts').update({
+        response_status: derivedStatus,
+        assigned_to: responseRecord.assignedTo,
+        latest_action: normAction,
+        latest_note: responseRecord.note,
+        updated_at: now,
+      }).eq('id', alertId);
+    } catch (_) {}
+  }
+
+  // If action is RESOLVE and alert is linked to an incident, resolve the canonical incident if hazard clearance is confirmed
+  const shouldClearHazard = clearHazard !== false && resolveIncident !== false;
+  if (normAction === 'RESOLVE' && alert.incidentId && shouldClearHazard) {
+    try {
+      db.prepare('UPDATE field_reports SET status = ? WHERE id = ?').run('resolved', alert.incidentId);
+      if (supabase) {
+        await supabase.from('incidents').update({ status: 'resolved' }).eq('id', alert.incidentId);
+      }
+    } catch (_) {}
+    await logActivity(userId, 'incident_resolved', 'incident', alert.incidentId, `Hazard marked resolved by ${actorName} (${userRole}) via alert response`);
+  }
+
+  // Audit log
+  await logActivity(
+    userId,
+    `alert_response_${normAction}`,
+    'alert',
+    alertId,
+    `${actorName} (${userRole}) performed ${normAction}: ${prevStatus} → ${derivedStatus}${responseRecord.note ? ` ("${responseRecord.note}")` : ''}`
+  );
+
+  const updatedAlert = await getAlertById(alertId);
+  const history = await getAlertResponses(alertId);
+
+  return {
+    response: responseRecord,
+    alert: updatedAlert,
+    history,
+    allowedActions: getAllowedActionsForRole(userRole, updatedAlert),
   };
 }
 
@@ -346,10 +704,19 @@ const SEVERITIES = ['minor', 'moderate', 'major', 'critical', 'low', 'medium', '
 
 function toFrontendReport(inc) {
   if (!inc) return null;
+  const rawLat = inc.lat;
+  const rawLng = inc.lng;
+  const hasValidLat = rawLat !== null && rawLat !== undefined && rawLat !== '' && !isNaN(Number(rawLat));
+  const hasValidLng = rawLng !== null && rawLng !== undefined && rawLng !== '' && !isNaN(Number(rawLng));
+  const hasGps = hasValidLat && hasValidLng;
+  const lat = hasGps ? Number(rawLat) : null;
+  const lng = hasGps ? Number(rawLng) : null;
+  const photo = inc.photo_url || inc.photoDataUrl || null;
+
   return {
     id: inc.id,
     userId: inc.reporter_id || inc.userId,
-    reporterRole: inc.reporter_role,
+    reporterRole: inc.reporter_role || (inc.userId && inc.userId.startsWith('driver') ? 'driver' : 'field'),
     nodeId: inc.node_id || inc.nodeId,
     road: inc.road,
     fromNode: inc.from_node || inc.fromNode || null,
@@ -358,11 +725,13 @@ function toFrontendReport(inc) {
     severity: inc.severity,
     title: inc.title,
     description: inc.description || '',
-    lat: inc.lat,
-    lng: inc.lng,
-    photoDataUrl: inc.photo_url || inc.photoDataUrl || null,
+    lat,
+    lng,
+    hasGps,
+    photoDataUrl: photo,
     status: inc.status === 'open' ? 'active' : inc.status,
     synced: 1,
+    clientId: inc.clientId || inc.client_id || null,
     createdAt: inc.created_at || inc.createdAt,
     resolvedAt: inc.resolved_at || inc.resolvedAt,
     resolutionNotes: inc.resolution_notes || inc.resolutionNotes,
@@ -412,7 +781,93 @@ async function createIncident(userId, body, userRole = 'field', { preserveClient
   if (!category || !CATEGORIES.includes(category)) throw new Error('Invalid or missing category');
   if (!title) throw new Error('Title is required');
 
+  const clientId = (body.clientId || body.clientSubmissionId || '').trim() || null;
+
+  // 1. Idempotency Guard: Match by clientId (offline queue sync retransmissions)
+  if (clientId) {
+    try {
+      const existingByClientId = db.prepare('SELECT * FROM field_reports WHERE clientId = ?').get(clientId);
+      if (existingByClientId) {
+        console.log(`[SupabaseService] Idempotency match by clientId: ${clientId}`);
+        return { ...toFrontendReport(existingByClientId), clientId };
+      }
+    } catch (err) {
+      console.warn('[SupabaseService] clientId lookup error:', err.message);
+    }
+  }
+
+  // 2. Idempotency Guard: Match by explicit report id
+  if (body.id) {
+    try {
+      const existingById = db.prepare('SELECT * FROM field_reports WHERE id = ?').get(body.id);
+      if (existingById) {
+        console.log(`[SupabaseService] Idempotency match by id: ${body.id}`);
+        return { ...toFrontendReport(existingById), clientId: clientId || existingById.clientId || null };
+      }
+    } catch (_) {}
+  }
+
+  // 3. Rapid accidental double-submission guard (within 5 minutes)
+  try {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const cleanCategory = category === 'road_block' ? 'road_blockage' : category;
+    const cleanRoad = (road || '').trim().toLowerCase();
+    const cleanTitle = (title || '').trim().toLowerCase();
+    const subLat = (lat !== undefined && lat !== null && lat !== '') ? Number(lat) : null;
+    const subLng = (lng !== undefined && lng !== null && lng !== '') ? Number(lng) : null;
+
+    const recentReports = db.prepare(`
+      SELECT * FROM field_reports
+      WHERE userId = ?
+        AND status != 'resolved'
+        AND createdAt >= ?
+      ORDER BY createdAt DESC
+    `).all(userId, fiveMinutesAgo);
+
+    const duplicate = recentReports.find((r) => {
+      const rCat = r.category === 'road_block' ? 'road_blockage' : r.category;
+      if (rCat !== cleanCategory) return false;
+      if ((r.title || '').trim().toLowerCase() !== cleanTitle) return false;
+      if (((r.road || '').trim().toLowerCase()) !== cleanRoad) return false;
+
+      // Geographically nearby check when GPS exists on both
+      if (subLat !== null && subLng !== null && r.lat !== null && r.lat !== undefined && r.lng !== null && r.lng !== undefined) {
+        const distDeg = Math.hypot(subLat - Number(r.lat), subLng - Number(r.lng));
+        return distDeg < 0.01; // within ~1 km
+      }
+
+      // If GPS is unavailable on either, fallback duplicate key is matched
+      return true;
+    });
+
+    if (duplicate) {
+      console.log(`[SupabaseService] Rapid duplicate submission prevented for user ${userId}: "${title}"`);
+      return { ...toFrontendReport(duplicate), clientId: clientId || duplicate.clientId || null };
+    }
+  } catch (err) {
+    console.warn('[SupabaseService] Duplicate check warning:', err.message);
+  }
+
   const id = body.id || uuid();
+
+  // Validate photoDataUrl if provided
+  let cleanPhoto = null;
+  if (photoDataUrl && typeof photoDataUrl === 'string' && photoDataUrl.trim().length > 0) {
+    const trimmedPhoto = photoDataUrl.trim();
+    const isDataImage = /^data:image\/(jpeg|jpg|png|webp|gif|svg\+xml);base64,/i.test(trimmedPhoto);
+    const isHttpUrl = /^https?:\/\/.+/i.test(trimmedPhoto);
+    const isLocalPath = /^\/images\/.+/i.test(trimmedPhoto);
+    if (!isDataImage && !isHttpUrl && !isLocalPath) {
+      throw new Error('Invalid image format. Attached photos must be valid base64 image Data URLs (JPEG, PNG, WebP) or image URLs.');
+    }
+    cleanPhoto = trimmedPhoto;
+  }
+
+  const hasSubLat = lat !== undefined && lat !== null && lat !== '' && !isNaN(Number(lat));
+  const hasSubLng = lng !== undefined && lng !== null && lng !== '' && !isNaN(Number(lng));
+  const cleanLat = (hasSubLat && hasSubLng) ? Number(lat) : null;
+  const cleanLng = (hasSubLat && hasSubLng) ? Number(lng) : null;
+
   const record = {
     id,
     reporter_id: userId,
@@ -426,12 +881,14 @@ async function createIncident(userId, body, userRole = 'field', { preserveClient
     from_node: fromNode || null,
     to_node: toNode || null,
     road: road || null,
-    lat: lat !== undefined ? Number(lat) : null,
-    lng: lng !== undefined ? Number(lng) : null,
-    photo_url: photoDataUrl || null,
+    lat: cleanLat,
+    lng: cleanLng,
+    photo_url: cleanPhoto,
     affected_modes: body.affectedMode ? [body.affectedMode] : ['road'],
     estimated_delay_minutes: Number(body.estimatedDelayMinutes) || 0,
     is_demo: false,
+    clientId,
+    client_id: clientId,
     created_at: preserveClientTimestamp ? (createdAt || new Date().toISOString()) : new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -444,8 +901,8 @@ async function createIncident(userId, body, userRole = 'field', { preserveClient
 
   // Sync with SQLite fallback
   try {
-    db.prepare(`INSERT INTO field_reports (id,userId,nodeId,road,fromNode,toNode,category,severity,title,description,lat,lng,photoDataUrl,status,synced,createdAt)
-      VALUES (@id,@userId,@nodeId,@road,@fromNode,@toNode,@category,@severity,@title,@description,@lat,@lng,@photoDataUrl,@status,@synced,@createdAt)`)
+    db.prepare(`INSERT INTO field_reports (id,userId,nodeId,road,fromNode,toNode,category,severity,title,description,lat,lng,photoDataUrl,status,synced,clientId,createdAt)
+      VALUES (@id,@userId,@nodeId,@road,@fromNode,@toNode,@category,@severity,@title,@description,@lat,@lng,@photoDataUrl,@status,@synced,@clientId,@createdAt)`)
       .run({
         id,
         userId,
@@ -456,15 +913,18 @@ async function createIncident(userId, body, userRole = 'field', { preserveClient
         category,
         severity,
         title,
-        description,
+        description: record.description || '',
         lat: record.lat,
         lng: record.lng,
         photoDataUrl: record.photo_url,
         status: 'open',
         synced: 1,
+        clientId,
         createdAt: record.created_at,
       });
-  } catch (_) {}
+  } catch (err) {
+    console.warn('[SupabaseService] field_reports insert error:', err.message);
+  }
 
   // Auto-generate an alert in alerts table so drivers, logistics, and officials are immediately synchronized
   try {
@@ -478,6 +938,8 @@ async function createIncident(userId, body, userRole = 'field', { preserveClient
       road: road || null,
       severity: record.severity,
       createdBy: userId,
+      incidentId: id,
+      responseStatus: 'new',
     });
   } catch (_) {}
 
@@ -529,6 +991,10 @@ async function updateIncidentStatus(id, newStatus, updatedBy, userRole, comment 
     if (existing) {
       if (userRole !== 'official' && existing.userId !== updatedBy) return { forbidden: true };
       db.prepare('UPDATE field_reports SET status = ? WHERE id = ?').run(newStatus, id);
+    }
+
+    if (newStatus === 'resolved' || mappedStatus === 'resolved') {
+      db.prepare("UPDATE alerts SET responseStatus = 'resolved', updatedAt = ? WHERE incidentId = ?").run(new Date().toISOString(), id);
     }
   } catch (_) {}
 
@@ -589,6 +1055,7 @@ async function getActiveDisruptions() {
 // 4. VEHICLES SERVICE
 // =============================================================================
 async function getVehicles(ownerId = null) {
+  const { determineLocationSource } = require('../utils/shipmentIntelligence');
   const supabase = getSupabaseClient();
   if (supabase) {
     let query = supabase.from('vehicles').select('*');
@@ -597,22 +1064,26 @@ async function getVehicles(ownerId = null) {
 
     const { data, error } = await query;
     if (!error && data) {
-      return data.map((v) => ({
-        id: v.id,
-        ownerId: v.owner_id,
-        driverId: v.driver_id,
-        vehicleNumber: v.vehicle_number,
-        vehicleType: v.vehicle_type,
-        cargoType: v.cargo_type,
-        capacityTonnes: v.capacity_tonnes,
-        originNode: v.origin_node,
-        destinationNode: v.destination_node,
-        status: v.status,
-        lat: v.lat,
-        lng: v.lng,
-        lastUpdated: v.last_updated,
-        isDemo: v.is_demo,
-      }));
+      return data.map((v) => {
+        const item = {
+          id: v.id,
+          ownerId: v.owner_id,
+          driverId: v.driver_id,
+          vehicleNumber: v.vehicle_number,
+          vehicleType: v.vehicle_type || 'Heavy Truck',
+          cargoType: v.cargo_type,
+          capacityTonnes: v.capacity_tonnes || 16.0,
+          originNode: v.origin_node,
+          destinationNode: v.destination_node,
+          status: v.status,
+          lat: v.lat ?? null,
+          lng: v.lng ?? null,
+          lastUpdated: v.last_updated,
+          isDemo: Boolean(v.is_demo),
+        };
+        item.locationSource = determineLocationSource(item);
+        return item;
+      });
     }
   }
 
@@ -620,22 +1091,42 @@ async function getVehicles(ownerId = null) {
   const rows = ownerId
     ? db.prepare('SELECT * FROM vehicles WHERE ownerId = ?').all(ownerId)
     : db.prepare('SELECT * FROM vehicles ORDER BY lastUpdated DESC').all();
-  return rows;
+
+  return rows.map((v) => {
+    const item = {
+      ...v,
+      driverId: v.driverId || null,
+      vehicleType: v.vehicleType || 'Heavy Truck',
+      capacityTonnes: v.capacityTonnes || 16.0,
+      isDemo: Boolean(v.isDemo),
+      lat: v.lat ?? null,
+      lng: v.lng ?? null,
+    };
+    item.locationSource = determineLocationSource(item);
+    return item;
+  });
 }
 
 async function createVehicle(userId, vehicleData) {
+  const { determineLocationSource } = require('../utils/shipmentIntelligence');
   const id = vehicleData.id || uuid();
+  const hasGps = vehicleData.lat !== undefined && vehicleData.lat !== null && vehicleData.lng !== undefined && vehicleData.lng !== null;
+  const locationSource = hasGps ? (vehicleData.locationSource || 'STATIC_DEMO') : 'UNAVAILABLE';
+
   const record = {
     id,
     owner_id: userId,
-    driver_id: userId,
+    driver_id: vehicleData.driverId || userId,
     vehicle_number: vehicleData.vehicleNumber,
+    vehicle_type: vehicleData.vehicleType || 'Heavy Truck',
     cargo_type: vehicleData.cargoType || 'General cargo',
+    capacity_tonnes: vehicleData.capacityTonnes || 16.0,
     origin_node: vehicleData.originNode,
     destination_node: vehicleData.destinationNode,
-    status: 'in_transit',
+    status: vehicleData.status || 'in_transit',
     lat: vehicleData.lat ?? null,
     lng: vehicleData.lng ?? null,
+    location_source: locationSource,
     is_demo: false,
     last_updated: new Date().toISOString(),
   };
@@ -646,9 +1137,25 @@ async function createVehicle(userId, vehicleData) {
   }
 
   try {
-    db.prepare(`INSERT INTO vehicles (id,ownerId,vehicleNumber,cargoType,originNode,destinationNode,status,lat,lng,lastUpdated)
-      VALUES (@id,@ownerId,@vehicleNumber,@cargoType,@originNode,@destinationNode,@status,@lat,@lng,@lastUpdated)`)
-      .run({ ...vehicleData, id, ownerId: userId, status: 'in_transit', lastUpdated: record.last_updated });
+    db.prepare(`INSERT INTO vehicles (id,ownerId,driverId,vehicleNumber,vehicleType,cargoType,capacityTonnes,originNode,destinationNode,status,lat,lng,locationSource,isDemo,lastUpdated)
+      VALUES (@id,@ownerId,@driverId,@vehicleNumber,@vehicleType,@cargoType,@capacityTonnes,@originNode,@destinationNode,@status,@lat,@lng,@locationSource,@isDemo,@lastUpdated)`)
+      .run({
+        id,
+        ownerId: userId,
+        driverId: record.driver_id,
+        vehicleNumber: record.vehicle_number,
+        vehicleType: record.vehicle_type,
+        cargoType: record.cargo_type,
+        capacityTonnes: record.capacity_tonnes,
+        originNode: record.origin_node,
+        destinationNode: record.destination_node,
+        status: record.status,
+        lat: record.lat,
+        lng: record.lng,
+        locationSource,
+        isDemo: 0,
+        lastUpdated: record.last_updated,
+      });
   } catch (_) {}
 
   await logActivity(userId, 'vehicle_created', 'vehicle', id, `Vehicle ${vehicleData.vehicleNumber} registered.`);
@@ -656,18 +1163,29 @@ async function createVehicle(userId, vehicleData) {
   return {
     id,
     ownerId: userId,
+    driverId: record.driver_id,
     vehicleNumber: record.vehicle_number,
+    vehicleType: record.vehicle_type,
     cargoType: record.cargo_type,
+    capacityTonnes: record.capacity_tonnes,
     originNode: record.origin_node,
     destinationNode: record.destination_node,
     status: record.status,
     lat: record.lat,
     lng: record.lng,
+    locationSource,
     lastUpdated: record.last_updated,
+    isDemo: false,
   };
 }
 
 async function updateVehicleLocation(id, userId, role, { lat, lng, status }) {
+  const hasGps = lat !== undefined && lat !== null && lat !== '' && !isNaN(Number(lat)) &&
+                 lng !== undefined && lng !== null && lng !== '' && !isNaN(Number(lng));
+  const cleanLat = hasGps ? Number(lat) : null;
+  const cleanLng = hasGps ? Number(lng) : null;
+  const locationSource = hasGps ? 'LIVE_GPS' : 'UNAVAILABLE';
+
   const supabase = getSupabaseClient();
   if (supabase) {
     const { data: vehicle } = await supabase.from('vehicles').select('*').eq('id', id).maybeSingle();
@@ -677,8 +1195,9 @@ async function updateVehicleLocation(id, userId, role, { lat, lng, status }) {
     }
 
     const updates = {
-      lat,
-      lng,
+      lat: cleanLat,
+      lng: cleanLng,
+      location_source: locationSource,
       last_updated: new Date().toISOString(),
     };
     if (status) updates.status = status;
@@ -689,14 +1208,19 @@ async function updateVehicleLocation(id, userId, role, { lat, lng, status }) {
       vehicle: {
         id: updated.id,
         ownerId: updated.owner_id,
+        driverId: updated.driver_id,
         vehicleNumber: updated.vehicle_number,
+        vehicleType: updated.vehicle_type,
         cargoType: updated.cargo_type,
+        capacityTonnes: updated.capacity_tonnes,
         originNode: updated.origin_node,
         destinationNode: updated.destination_node,
         status: updated.status,
         lat: updated.lat,
         lng: updated.lng,
+        locationSource,
         lastUpdated: updated.last_updated,
+        isDemo: Boolean(updated.is_demo),
       },
     };
   }
@@ -704,12 +1228,20 @@ async function updateVehicleLocation(id, userId, role, { lat, lng, status }) {
   // SQLite fallback
   const vehicle = db.prepare('SELECT * FROM vehicles WHERE id = ?').get(id);
   if (!vehicle) return { notFound: true };
-  if (role !== 'official' && vehicle.ownerId !== userId) return { forbidden: true };
+  if (role !== 'official' && role !== 'logistics' && vehicle.ownerId !== userId && vehicle.driverId !== userId) {
+    return { forbidden: true };
+  }
 
-  db.prepare('UPDATE vehicles SET lat = ?, lng = ?, status = COALESCE(?, status), lastUpdated = ? WHERE id = ?')
-    .run(lat, lng, status || null, new Date().toISOString(), id);
+  db.prepare('UPDATE vehicles SET lat = ?, lng = ?, status = COALESCE(?, status), locationSource = ?, lastUpdated = ? WHERE id = ?')
+    .run(cleanLat, cleanLng, status || null, locationSource, new Date().toISOString(), id);
   const updated = db.prepare('SELECT * FROM vehicles WHERE id = ?').get(id);
-  return { vehicle: updated };
+  return {
+    vehicle: {
+      ...updated,
+      locationSource,
+      isDemo: Boolean(updated.isDemo),
+    },
+  };
 }
 
 // =============================================================================
@@ -717,6 +1249,7 @@ async function updateVehicleLocation(id, userId, role, { lat, lng, status }) {
 // =============================================================================
 async function getShipments(userId = null, role = null) {
   const supabase = getSupabaseClient();
+  let shipments = [];
   if (supabase) {
     let query = supabase.from('shipments').select('*');
     if (role === 'logistics' && userId) {
@@ -726,7 +1259,7 @@ async function getShipments(userId = null, role = null) {
 
     const { data, error } = await query;
     if (!error && data) {
-      return data.map((s) => ({
+      shipments = data.map((s) => ({
         id: s.id,
         vehicleId: s.vehicle_id,
         driverId: s.driver_id,
@@ -736,6 +1269,8 @@ async function getShipments(userId = null, role = null) {
         cargoType: s.cargo_type,
         priority: s.priority,
         status: s.status,
+        mode: s.mode || 'road',
+        title: s.title || null,
         routeJson: s.route_json ? (typeof s.route_json === 'string' ? s.route_json : JSON.stringify(s.route_json)) : null,
         route: typeof s.route_json === 'object' ? s.route_json : (s.route_json ? JSON.parse(s.route_json) : null),
         etaMinutes: s.eta_minutes,
@@ -743,13 +1278,37 @@ async function getShipments(userId = null, role = null) {
         isDemo: s.is_demo,
       }));
     }
+  } else {
+    // SQLite fallback
+    let rows = [];
+    if (role === 'logistics' && userId) {
+      rows = db.prepare('SELECT * FROM shipments WHERE createdBy = ? ORDER BY createdAt DESC').all(userId);
+      if (rows.length === 0) {
+        rows = db.prepare('SELECT * FROM shipments ORDER BY createdAt DESC LIMIT 100').all();
+      }
+    } else {
+      rows = db.prepare('SELECT * FROM shipments ORDER BY createdAt DESC LIMIT 100').all();
+    }
+    shipments = rows.map((r) => ({
+      ...r,
+      mode: r.mode || 'road',
+      route: r.routeJson ? JSON.parse(r.routeJson) : null,
+      isDemo: Boolean(r.isDemo),
+    }));
   }
 
-  // SQLite fallback
-  const rows = role === 'logistics'
-    ? db.prepare('SELECT * FROM shipments WHERE createdBy = ? ORDER BY createdAt DESC').all(userId)
-    : db.prepare('SELECT * FROM shipments ORDER BY createdAt DESC LIMIT 100').all();
-  return rows.map((r) => ({ ...r, route: r.routeJson ? JSON.parse(r.routeJson) : null }));
+  // Phase 4 Intelligence Enrichment
+  const { enrichShipments } = require('../utils/shipmentIntelligence');
+  const vehicles = await getVehicles();
+  const disruptions = await getActiveDisruptions();
+  const incidents = await getIncidents();
+
+  return enrichShipments(shipments, vehicles, { disruptions, incidents });
+}
+
+async function getShipmentById(id) {
+  const all = await getShipments();
+  return all.find((s) => s.id === id) || null;
 }
 
 async function createShipment(userId, shipmentData) {
@@ -763,9 +1322,11 @@ async function createShipment(userId, shipmentData) {
     destination_node: shipmentData.destinationNode,
     cargo_type: shipmentData.cargoType || 'General cargo',
     priority: shipmentData.priority || 'normal',
-    status: 'planned',
+    status: shipmentData.status || 'planned',
+    mode: shipmentData.mode || 'road',
+    title: shipmentData.title || `${shipmentData.cargoType || 'Cargo'} (${shipmentData.originNode?.toUpperCase()} → ${shipmentData.destinationNode?.toUpperCase()})`,
     route_json: shipmentData.route ? shipmentData.route : null,
-    eta_minutes: shipmentData.route ? shipmentData.route.etaMinutes : null,
+    eta_minutes: shipmentData.route ? shipmentData.route.etaMinutes : (shipmentData.etaMinutes || null),
     is_demo: false,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -777,19 +1338,23 @@ async function createShipment(userId, shipmentData) {
   }
 
   try {
-    db.prepare(`INSERT INTO shipments (id,vehicleId,createdBy,originNode,destinationNode,cargoType,priority,status,routeJson,etaMinutes,createdAt)
-      VALUES (@id,@vehicleId,@createdBy,@originNode,@destinationNode,@cargoType,@priority,@status,@routeJson,@etaMinutes,@createdAt)`)
+    db.prepare(`INSERT INTO shipments (id,vehicleId,driverId,createdBy,originNode,destinationNode,cargoType,priority,status,mode,title,routeJson,etaMinutes,isDemo,createdAt)
+      VALUES (@id,@vehicleId,@driverId,@createdBy,@originNode,@destinationNode,@cargoType,@priority,@status,@mode,@title,@routeJson,@etaMinutes,@isDemo,@createdAt)`)
       .run({
         id,
         vehicleId: record.vehicle_id,
+        driverId: record.driver_id,
         createdBy: userId,
         originNode: record.origin_node,
         destinationNode: record.destination_node,
         cargoType: record.cargo_type,
         priority: record.priority,
-        status: 'planned',
+        status: record.status,
+        mode: record.mode,
+        title: record.title,
         routeJson: record.route_json ? JSON.stringify(record.route_json) : null,
         etaMinutes: record.eta_minutes,
+        isDemo: 0,
         createdAt: record.created_at,
       });
   } catch (_) {}
@@ -806,6 +1371,8 @@ async function createShipment(userId, shipmentData) {
     cargoType: record.cargo_type,
     priority: record.priority,
     status: record.status,
+    mode: record.mode,
+    title: record.title,
     route: record.route_json,
     etaMinutes: record.eta_minutes,
     createdAt: record.created_at,
@@ -813,42 +1380,38 @@ async function createShipment(userId, shipmentData) {
 }
 
 async function updateShipmentStatus(id, userId, role, status) {
+  const validStatuses = ['planned', 'assigned', 'loading', 'in_transit', 'delayed', 'delivered', 'blocked', 'cancelled', 'pending'];
+  if (!validStatuses.includes(status)) {
+    throw new Error(`Invalid shipment status: ${status}`);
+  }
+
   const supabase = getSupabaseClient();
   if (supabase) {
     const { data: shipment } = await supabase.from('shipments').select('*').eq('id', id).maybeSingle();
     if (!shipment) return { notFound: true };
-    if (role !== 'official' && shipment.created_by !== userId) {
+    const isCreator = shipment.created_by === userId;
+    const isAssignedDriver = role === 'driver' && shipment.driver_id === userId;
+    if (role !== 'official' && role !== 'logistics' && !isCreator && !isAssignedDriver) {
       return { forbidden: true };
     }
 
     await supabase.from('shipments').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
-    const { data: updated } = await supabase.from('shipments').select('*').eq('id', id).single();
-    return {
-      shipment: {
-        id: updated.id,
-        vehicleId: updated.vehicle_id,
-        driverId: updated.driver_id,
-        createdBy: updated.created_by,
-        originNode: updated.origin_node,
-        destinationNode: updated.destination_node,
-        cargoType: updated.cargo_type,
-        priority: updated.priority,
-        status: updated.status,
-        route: typeof updated.route_json === 'object' ? updated.route_json : (updated.route_json ? JSON.parse(updated.route_json) : null),
-        etaMinutes: updated.eta_minutes,
-        createdAt: updated.created_at,
-      },
-    };
+    const updated = await getShipmentById(id);
+    return { shipment: updated };
   }
 
   // SQLite fallback
   const existing = db.prepare('SELECT * FROM shipments WHERE id = ?').get(id);
   if (!existing) return { notFound: true };
-  if (role !== 'official' && existing.createdBy !== userId) return { forbidden: true };
+  const isCreator = existing.createdBy === userId;
+  const isAssignedDriver = role === 'driver' && existing.driverId === userId;
+  if (role !== 'official' && role !== 'logistics' && !isCreator && !isAssignedDriver) {
+    return { forbidden: true };
+  }
 
   db.prepare('UPDATE shipments SET status = ? WHERE id = ?').run(status, id);
-  const row = db.prepare('SELECT * FROM shipments WHERE id = ?').get(id);
-  return { shipment: { ...row, route: row.routeJson ? JSON.parse(row.routeJson) : null } };
+  const updated = await getShipmentById(id);
+  return { shipment: updated };
 }
 
 async function assignDriverToShipment(id, userId, role, driverId) {
@@ -859,26 +1422,9 @@ async function assignDriverToShipment(id, userId, role, driverId) {
     if (role !== 'official' && role !== 'logistics') return { forbidden: true };
 
     await supabase.from('shipments').update({ driver_id: driverId, status: 'assigned', updated_at: new Date().toISOString() }).eq('id', id);
-    const { data: updated } = await supabase.from('shipments').select('*').eq('id', id).single();
-
     await logActivity(userId, 'shipment_assigned', 'shipment', id, `Driver assigned to shipment ${id}`);
-
-    return {
-      shipment: {
-        id: updated.id,
-        vehicleId: updated.vehicle_id,
-        driverId: updated.driver_id,
-        createdBy: updated.created_by,
-        originNode: updated.origin_node,
-        destinationNode: updated.destination_node,
-        cargoType: updated.cargo_type,
-        priority: updated.priority,
-        status: updated.status,
-        route: typeof updated.route_json === 'object' ? updated.route_json : (updated.route_json ? JSON.parse(updated.route_json) : null),
-        etaMinutes: updated.eta_minutes,
-        createdAt: updated.created_at,
-      },
-    };
+    const updated = await getShipmentById(id);
+    return { shipment: updated };
   }
 
   // SQLite fallback
@@ -887,8 +1433,9 @@ async function assignDriverToShipment(id, userId, role, driverId) {
   if (role !== 'official' && role !== 'logistics') return { forbidden: true };
 
   db.prepare('UPDATE shipments SET driverId = ?, status = ? WHERE id = ?').run(driverId, 'assigned', id);
-  const row = db.prepare('SELECT * FROM shipments WHERE id = ?').get(id);
-  return { shipment: { ...row, route: row.routeJson ? JSON.parse(row.routeJson) : null } };
+  await logActivity(userId, 'shipment_assigned', 'shipment', id, `Driver assigned to shipment ${id}`);
+  const updated = await getShipmentById(id);
+  return { shipment: updated };
 }
 
 // =============================================================================
@@ -910,6 +1457,14 @@ async function logActivity(userId, action, entityType, entityId, description) {
       await supabase.from('activity_logs').insert(record);
     } catch (_) {}
   }
+
+  // SQLite fallback
+  try {
+    db.prepare(`INSERT INTO activity_logs (id, userId, action, entityType, entityId, description, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+        uuid(), userId || null, action, entityType, entityId ? String(entityId) : null, description || '', record.created_at
+      );
+  } catch (_) {}
 }
 
 async function getActivityLogs(limit = 25) {
@@ -920,7 +1475,7 @@ async function getActivityLogs(limit = 25) {
       .select('*')
       .order('created_at', { ascending: false })
       .limit(limit);
-    if (!error && data) {
+    if (!error && data && data.length > 0) {
       return data.map((a) => ({
         id: a.id,
         userId: a.user_id,
@@ -932,6 +1487,22 @@ async function getActivityLogs(limit = 25) {
       }));
     }
   }
+
+  // SQLite fallback
+  try {
+    const rows = db.prepare('SELECT * FROM activity_logs ORDER BY createdAt DESC LIMIT ?').all(limit);
+    if (rows && rows.length > 0) {
+      return rows.map((a) => ({
+        id: a.id,
+        userId: a.userId,
+        action: a.action,
+        entityType: a.entityType,
+        entityId: a.entityId,
+        description: a.description,
+        createdAt: a.createdAt,
+      }));
+    }
+  } catch (_) {}
 
   // Fallback demo activity items if none stored yet
   return [
@@ -953,8 +1524,12 @@ module.exports = {
   updateUser,
   listUsers,
   deleteUser,
-  // Alerts
+  // Alerts & Response Lifecycle (Phase 6)
   getAlerts,
+  getAlertById,
+  getAlertResponses,
+  recordAlertResponse,
+  getAllowedActionsForRole,
   createAlert,
   deleteAlert,
   // Incidents / Reports
@@ -970,6 +1545,7 @@ module.exports = {
   updateVehicleLocation,
   // Shipments
   getShipments,
+  getShipmentById,
   createShipment,
   updateShipmentStatus,
   assignDriverToShipment,
