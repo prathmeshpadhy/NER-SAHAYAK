@@ -2,7 +2,7 @@
   "name": "ner-sahayak-frontend",
   "version": "1.0.0",
   "private": true,
-  "homepage": ".",
+  "homepage": "/",
   "dependencies": {
     "leaflet": "^1.9.4",
     "react": "^18.3.1",

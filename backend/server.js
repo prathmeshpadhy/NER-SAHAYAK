@@ -26,16 +26,26 @@ const PORT = process.env.PORT || 4000;
 app.use(securityHeaders);
 
 // 2. Controlled CORS Configuration
-const allowedOrigins = (process.env.CORS_ORIGIN || process.env.CORS_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:4000,http://127.0.0.1:4000')
+const defaultOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:4000',
+  'http://127.0.0.1:4000',
+  'https://ner-sahayak.onrender.com',
+];
+const configuredOrigins = (process.env.CORS_ORIGIN || process.env.CORS_ORIGINS || '')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
+
+const allowedOrigins = [...new Set([...defaultOrigins, ...configuredOrigins])];
 
 const corsOptions = {
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
     if (
       allowedOrigins.includes(origin) ||
+      origin.endsWith('.onrender.com') ||
       (!process.env.NODE_ENV && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin))
     ) {
       return callback(null, true);
@@ -104,19 +114,30 @@ app.use('/api/ask', askRoutes);
 app.use('/api/chat', askRoutes);
 app.use('/ask', askRoutes);
 
-// 6. Optional Static Asset Serving in Production (Safe Fallback)
+// 6. API 404 Guard (Guarantees unknown /api requests return JSON 404, never index.html)
+app.all('/api/*', (req, res) => {
+  res.status(404).json({
+    error: `API endpoint ${req.method} ${req.path} not found`,
+  });
+});
+
+// 7. Static Asset Serving & React SPA Routing
 const frontendBuildPath = path.join(__dirname, '../frontend/build');
 if (fs.existsSync(frontendBuildPath)) {
   app.use(express.static(frontendBuildPath));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api')) {
-      return res.status(404).json({ error: 'Not found' });
-    }
+  app.get('*', (req, res) => {
     res.sendFile(path.join(frontendBuildPath, 'index.html'));
   });
 } else {
-  app.use((req, res) => res.status(404).json({ error: 'Not found' }));
+  app.get('*', (req, res) => {
+    res.status(404).json({ error: 'Frontend build not found. Please build the frontend.' });
+  });
 }
+
+// 8. Final Fallback for unhandled non-GET requests
+app.all('*', (req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 // 7. Centralized Error Handler (Stack traces & SQL errors sanitized)
 app.use((err, req, res, next) => {
